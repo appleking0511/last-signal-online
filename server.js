@@ -99,6 +99,12 @@ function view(room,me){
 function sendSse(res,data){res.write(`data: ${JSON.stringify(data)}\n\n`)}
 function broadcast(room){room.updatedAt=Date.now();for(const [playerId,res] of room.clients){const p=room.players.find(x=>x.id===playerId);if(p)sendSse(res,view(room,p))}}
 
+function deleteRoom(room){
+  clearTimeout(room.timer);room.status='deleted';room.phase='deleted';room.deadline=null;
+  addLog(room,'방장이 방을 삭제했습니다.','system');broadcast(room);
+  setTimeout(()=>{for(const res of room.clients.values())res.end();room.clients.clear();rooms.delete(room.code)},800);
+}
+
 function startGame(room){
   if(room.players.length<2)throw Error('최소 2명이 필요합니다.');if(!room.players.every(p=>p.ready))throw Error('모든 플레이어가 준비해야 합니다.');
   room.status='playing';room.players.forEach(p=>{p.hp=20;p.alive=true;p.hand=[];p.discard=[];p.choice=null;p.buffs={weapon:0,shield:0,stock:0,factory:0};initialHand(room,p)});room.startIndex=Math.floor(Math.random()*room.players.length);addLog(room,'게임 시작 · 마지막 생존자를 결정합니다.','system');beginRound(room);
@@ -187,6 +193,7 @@ async function api(req,res,url){
     if(req.method==='POST'&&url.pathname==='/api/room/join'){const b=await readBody(req),x=joinRoom(String(b.code||''),b.name);return json(res,200,{code:x.room.code,token:x.player.id})}
     if(req.method==='POST'&&url.pathname==='/api/ready'){const b=await readBody(req),{room,player}=auth(b);if(room.status!=='lobby')throw Error('대기실 단계가 아닙니다.');player.ready=!player.ready;broadcast(room);return json(res,200,{ok:true})}
     if(req.method==='POST'&&url.pathname==='/api/start'){const b=await readBody(req),{room,player}=auth(b);if(room.hostId!==player.id)throw Error('방장만 시작할 수 있습니다.');startGame(room);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/room/delete'){const b=await readBody(req),{room,player}=auth(b);if(room.hostId!==player.id)throw Error('방장만 방을 삭제할 수 있습니다.');deleteRoom(room);return json(res,200,{ok:true})}
     if(req.method==='POST'&&url.pathname==='/api/state'){const b=await readBody(req),{room,player}=auth(b);return json(res,200,view(room,player))}
     if(req.method==='POST'&&url.pathname==='/api/select'){const b=await readBody(req),{room,player}=auth(b);submit(room,player,b.kind,b.uid);return json(res,200,{ok:true})}
     if(req.method==='GET'&&url.pathname==='/api/events'){
