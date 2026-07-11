@@ -26,6 +26,42 @@
     .overlay{position:fixed;z-index:20;inset:0;background:#03060cbb;display:grid;place-items:center;padding:20px;backdrop-filter:blur(8px)}.modal{width:min(460px,100%);background:#111b2d;border:1px solid var(--line);border-radius:20px;padding:27px;box-shadow:0 30px 90px #000}.modal h2{margin:7px 0 9px}.modal p{color:var(--muted);font-size:11px;line-height:1.7}.modal .btn{width:100%;margin-top:15px}.error{color:#ff8995;min-height:18px;font-size:10px;margin-top:9px}.connection{position:fixed;z-index:50;top:14px;left:50%;transform:translateX(-50%);background:#ff6070;color:white;border-radius:999px;padding:8px 13px;font-size:9px;font-weight:900}
     @media(max-width:1050px){.layout{grid-template-columns:210px 1fr}.right{display:none}.seats{grid-template-columns:repeat(3,1fr)}}
     @media(max-width:720px){.entry-card{grid-template-columns:1fr}.hero{padding:34px 28px}.hero h1{font-size:55px}.hero p{display:none}.entry-form{padding:30px 27px}.layout{display:block;height:auto}.left{display:none}.arena{min-height:calc(100vh - 82px)}.seats{grid-template-columns:repeat(2,1fr)}.wait-players{grid-template-columns:1fr}.waiting-card{padding:22px}.code-box b{font-size:19px}.top .room{display:none}.event p{display:none}}
+    /* 화면 높이에 상관없이 제출 영역을 뷰포트 안에 유지 */
+    #game:not(.hidden){height:100dvh;max-height:100dvh;overflow:hidden}
+    #game:not(.hidden) .layout{height:calc(100dvh - 91px);min-height:0}
+    .arena,.field-area{min-height:0}
+    .hand-zone{position:relative;z-index:5;flex-shrink:0}
+    .hand-actions .btn{min-height:36px;white-space:nowrap}
+
+    @media(max-height:720px) and (min-width:721px){
+      #game:not(.hidden) .top{height:48px}
+      #game:not(.hidden) .layout{height:calc(100dvh - 78px)}
+      .arena{grid-template-rows:62px minmax(120px,1fr) 152px}
+      .event{padding:7px 13px}.event-icon{width:38px;height:38px;font-size:18px}.timer{width:39px;height:39px}
+      .field-area{padding:8px 13px}.phase h2{font-size:16px;margin:3px 0}.phase p{display:none}
+      .seats{margin:8px auto;gap:6px}.seat{min-height:91px;padding:7px 5px}.seat .avatar{width:27px;height:27px}.choice{width:44px;height:48px;margin-top:4px}
+      .hand-zone{padding:7px 12px}.hand-head{margin-bottom:4px}.hand{min-height:108px;padding-bottom:2px}
+      .card{height:104px;flex-basis:96px;padding:7px}.card h3{font-size:10px;margin:6px 0 3px}.card p{font-size:7px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.rarity{bottom:4px}
+    }
+
+    @media(max-width:720px){
+      #game:not(.hidden){padding:7px}
+      #game:not(.hidden) .top{height:49px}
+      #game:not(.hidden) .layout{display:block;height:calc(100dvh - 63px);min-height:0}
+      #game:not(.hidden) .arena{height:100%;min-height:0;grid-template-rows:62px minmax(125px,1fr) 188px}
+      .event{padding:7px 10px}.event-icon{width:38px;height:38px;font-size:18px}.timer{width:39px;height:39px;font-size:11px}
+      .field-area{padding:7px 9px}.phase h2{font-size:16px;margin:3px 0}.phase p{display:none}
+      .seats{margin:9px auto;gap:6px}.seat{min-height:91px;padding:7px 4px}.seat .avatar{width:27px;height:27px}.choice{width:45px;height:49px;margin-top:4px}
+      .hand-zone{height:188px;padding:7px 8px;overflow:hidden;box-shadow:0 -8px 22px #0005}
+      .hand-head{margin-bottom:4px;gap:5px}.hand-head b{font-size:10px}.hand-actions{gap:4px}.hand-actions .btn{min-height:34px;padding:7px 9px;font-size:9px}
+      .hand{min-height:132px;height:132px;padding:4px 2px 2px;gap:6px}
+      .card{height:124px;flex-basis:96px;padding:8px}.card h3{font-size:11px;margin:7px 0 4px}.card p{font-size:7px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+    }
+
+    @media(max-width:390px){
+      .top-stat:first-of-type{display:none}.top .brand{font-size:16px}
+      .hand-head>span{display:none}.hand-actions .btn{padding-left:7px;padding-right:7px}
+    }
   </style>
 </head>
 <body>
