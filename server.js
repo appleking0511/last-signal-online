@@ -182,6 +182,7 @@ function json(res,status,data){const body=JSON.stringify(data);res.writeHead(sta
 function readBody(req){return new Promise((resolve,reject)=>{let data='';req.on('data',c=>{data+=c;if(data.length>1e6)req.destroy()});req.on('end',()=>{try{resolve(data?JSON.parse(data):{})}catch(e){reject(Error('잘못된 요청입니다.'))}});req.on('error',reject)})}
 async function api(req,res,url){
   try{
+    if(req.method==='GET'&&url.pathname==='/api/health')return json(res,200,{ok:true,service:'last-signal-online'});
     if(req.method==='POST'&&url.pathname==='/api/room/create'){const b=await readBody(req),x=createRoom(b.name);return json(res,200,{code:x.room.code,token:x.player.id})}
     if(req.method==='POST'&&url.pathname==='/api/room/join'){const b=await readBody(req),x=joinRoom(String(b.code||''),b.name);return json(res,200,{code:x.room.code,token:x.player.id})}
     if(req.method==='POST'&&url.pathname==='/api/ready'){const b=await readBody(req),{room,player}=auth(b);if(room.status!=='lobby')throw Error('대기실 단계가 아닙니다.');player.ready=!player.ready;broadcast(room);return json(res,200,{ok:true})}

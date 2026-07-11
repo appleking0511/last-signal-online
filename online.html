@@ -53,7 +53,16 @@
   $('#enterBtn').onclick=enter;$('#readyBtn').onclick=()=>post('/api/ready',{});$('#startBtn').onclick=()=>post('/api/start',{});$('#copyBtn').onclick=copyCode;$('#drawBtn').onclick=()=>choose({kind:'draw'});$('#submitBtn').onclick=submitChoice;$('#modalBtn').onclick=()=>$('#overlay').classList.add('hidden');
   $('#codeInput').oninput=e=>e.target.value=e.target.value.replace(/\D/g,'').slice(0,6);
 
-  async function request(url,body){const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const data=await res.json();if(!res.ok)throw Error(data.error||'요청 실패');return data}
+  async function request(url,body){
+    const res=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    const raw=await res.text();let data;
+    try{data=raw?JSON.parse(raw):{}}
+    catch{
+      if(res.status===404)throw Error('게임 서버 API를 찾지 못했습니다. Render에서 Static Site가 아닌 Web Service로 배포했는지 확인하세요.');
+      throw Error(`서버가 올바르지 않은 응답을 보냈습니다. (HTTP ${res.status})`);
+    }
+    if(!res.ok)throw Error(data.error||`요청 실패 (HTTP ${res.status})`);return data
+  }
   async function enter(){
     const name=$('#name').value.trim();if(!name)return error('닉네임을 입력하세요.');const code=$('#codeInput').value.trim();if(mode==='join'&&code.length!==6)return error('6자리 방 코드를 입력하세요.');
     try{$('#enterBtn').disabled=true;const data=await request(mode==='create'?'/api/room/create':'/api/room/join',{name,code});session=data;localStorage.setItem('lastSignalSession',JSON.stringify(session));connect()}catch(e){error(e.message)}finally{$('#enterBtn').disabled=false}
