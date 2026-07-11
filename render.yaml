@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: last-signal-online
+    runtime: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
