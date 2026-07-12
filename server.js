@@ -8,6 +8,80 @@ const ROOT = __dirname;
 const rooms = new Map();
 let cardUid = 1;
 
+// Optional Supabase persistence. Keep the secret key on the server only.
+const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const PERSISTENCE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_KEY);
+const persistenceQueues = new Map();
+const roomLoadPromises = new Map();
+
+function databaseHeaders(extra={}){
+  return {apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,'content-type':'application/json',...extra};
+}
+async function databaseRequest(resource,options={}){
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),8000);
+  try{
+    const response=await fetch(`${SUPABASE_URL}/rest/v1/${resource}`,{...options,headers:databaseHeaders(options.headers),signal:controller.signal});
+    if(!response.ok){const detail=await response.text();throw Error(`Supabase ${response.status}: ${detail.slice(0,300)}`)}
+    if(response.status===204)return null;const text=await response.text();return text?JSON.parse(text):null;
+  }finally{clearTimeout(timeout)}
+}
+function serializableRoom(room){
+  const {clients,timer,...state}=room;
+  return {...state,players:state.players.map(p=>({...p,connected:false}))};
+}
+function queuePersistence(code,work){
+  if(!PERSISTENCE_ENABLED)return Promise.resolve();
+  const previous=persistenceQueues.get(code)||Promise.resolve();
+  const task=previous.catch(()=>{}).then(work);
+  persistenceQueues.set(code,task);
+  task.then(()=>{if(persistenceQueues.get(code)===task)persistenceQueues.delete(code)},error=>{
+    if(persistenceQueues.get(code)===task)persistenceQueues.delete(code);
+    console.error(`[persistence] ${code}:`,error.message);
+  });
+  return task;
+}
+function persistRoom(room){
+  if(!PERSISTENCE_ENABLED||room.status==='deleted')return Promise.resolve();
+  const code=room.code,state=serializableRoom(room),updated_at=new Date().toISOString();
+  return queuePersistence(code,()=>databaseRequest('game_rooms?on_conflict=code',{
+    method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify({code,state,updated_at})
+  }));
+}
+function removePersistedRoom(code){
+  return queuePersistence(code,()=>databaseRequest(`game_rooms?code=eq.${encodeURIComponent(code)}`,{method:'DELETE'}));
+}
+function refreshCardUid(room){
+  let max=0;const scan=c=>{if(c&&Number.isFinite(Number(c.uid)))max=Math.max(max,Number(c.uid))};
+  for(const p of room.players||[]){for(const c of p.hand||[])scan(c);for(const c of p.discard||[])scan(c);scan(p.choice?.card)}
+  scan(room.event);scan(room.nextPresented);for(const packet of Object.values(room.pendingAttacks||{}))scan(packet?.card);
+  cardUid=Math.max(cardUid,max+1);
+}
+function resumeRoomTimer(room){
+  clearTimeout(room.timer);room.timer=null;
+  if(room.status!=='playing')return;
+  const delay=Math.max(50,(Number(room.deadline)||Date.now())-Date.now()+200);
+  if(room.phase==='turn')room.timer=setTimeout(()=>forceTurn(room),delay);
+  else if(room.phase==='turn_result')room.timer=setTimeout(()=>advanceTurn(room),delay);
+  else if(room.phase==='result')room.timer=setTimeout(()=>beginRound(room),delay);
+  else room.timer=setTimeout(()=>beginRound(room),50);
+}
+async function loadPersistedRoom(code){
+  if(!PERSISTENCE_ENABLED)return null;
+  const rows=await databaseRequest(`game_rooms?code=eq.${encodeURIComponent(code)}&select=state&limit=1`);
+  const state=rows?.[0]?.state;if(!state||state.status==='deleted')return null;
+  const room={...state,code:String(state.code||code),clients:new Map(),timer:null};
+  room.players=(room.players||[]).map(p=>({...p,connected:false}));room.effects=room.effects||[];room.logs=room.logs||[];room.pendingAttacks=room.pendingAttacks||{};
+  refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);return room;
+}
+async function getRoom(code){
+  code=String(code||'');if(rooms.has(code))return rooms.get(code);if(!PERSISTENCE_ENABLED)return null;
+  if(!roomLoadPromises.has(code)){
+    const loading=loadPersistedRoom(code).finally(()=>roomLoadPromises.delete(code));roomLoadPromises.set(code,loading);
+  }
+  return roomLoadPromises.get(code);
+}
+
 const CARDS = {
   weak:{name:'약공격',type:'attack',rarity:'common',text:'다음 생존자에게 3 피해',damage:3},
   strong:{name:'강공격',type:'attack',rarity:'common',text:'다음 생존자에게 5 피해',damage:5},
@@ -89,10 +163,10 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
   const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:shuffle([...PRESENTED_ATTACK_POOL]),nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
-  rooms.set(code,room);return {room,player:host};
+  rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
-function joinRoom(code,name){const room=rooms.get(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
-function auth(body){const room=rooms.get(String(body.code||''));if(!room)throw Error('방을 찾을 수 없습니다.');const player=room.players.find(p=>p.id===body.token);if(!player)throw Error('접속 정보가 올바르지 않습니다.');return {room,player}}
+async function joinRoom(code,name){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
+async function auth(body){const room=await getRoom(String(body.code||''));if(!room)throw Error('방을 찾을 수 없습니다.');const player=room.players.find(p=>p.id===body.token);if(!player)throw Error('접속 정보가 올바르지 않습니다.');return {room,player}}
 
 function view(room,me){
   const fullyRevealed=['turn','turn_result','result','finished'].includes(room.phase),revealedIds=new Set(room.phase==='reveal'?ordered(room).slice(0,room.revealIndex).map(p=>p.id):[]);
@@ -105,12 +179,12 @@ function view(room,me){
   };
 }
 function sendSse(res,data){res.write(`data: ${JSON.stringify(data)}\n\n`)}
-function broadcast(room){room.updatedAt=Date.now();for(const [playerId,res] of room.clients){const p=room.players.find(x=>x.id===playerId);if(p)sendSse(res,view(room,p))}}
+function broadcast(room){room.updatedAt=Date.now();for(const [playerId,res] of room.clients){const p=room.players.find(x=>x.id===playerId);if(p)sendSse(res,view(room,p))}persistRoom(room)}
 
 function deleteRoom(room){
   clearTimeout(room.timer);room.status='deleted';room.phase='deleted';room.deadline=null;
   addLog(room,'방장이 방을 삭제했습니다.','system');broadcast(room);
-  setTimeout(()=>{for(const res of room.clients.values())res.end();room.clients.clear();rooms.delete(room.code)},800);
+  setTimeout(()=>{for(const res of room.clients.values())res.end();room.clients.clear();rooms.delete(room.code);removePersistedRoom(room.code)},800);
 }
 
 function startGame(room){
@@ -186,7 +260,7 @@ function resolveSubmittedTurn(room,p){
   let incoming=room.pendingAttacks[p.id]||null;delete room.pendingAttacks[p.id];const attacker=incoming?incomingAttacker(room,incoming):null;
   if(incoming&&(!attacker||!attacker.alive)){addLog(room,`${incoming.name} · 공격자가 탈락해 소멸`);incoming=null}
   if(incoming)resolveIncomingTurn(room,p,p.choice,incoming,attacker);else resolveFreeTurn(room,p,p.choice);
-  if(checkWinner(room))return;const added=Math.max(1,room.effects.length-effectsBefore),delay=Math.max(1250,added*720+450);broadcast(room);room.timer=setTimeout(()=>advanceTurn(room),delay);
+  if(checkWinner(room))return;const added=Math.max(1,room.effects.length-effectsBefore),delay=Math.max(1250,added*720+450);room.deadline=Date.now()+delay;broadcast(room);room.timer=setTimeout(()=>advanceTurn(room),delay);
 }
 function resolveIncomingTurn(room,p,choice,incoming,attacker){
   const card=choice.kind==='card'?choice.card:null;if(attacker.system)addEffect(room,'attack',attacker,p,incoming.card,`제시 공격 · ${incoming.name}`);
@@ -239,16 +313,16 @@ function json(res,status,data){const body=JSON.stringify(data);res.writeHead(sta
 function readBody(req){return new Promise((resolve,reject)=>{let data='';req.on('data',c=>{data+=c;if(data.length>1e6)req.destroy()});req.on('end',()=>{try{resolve(data?JSON.parse(data):{})}catch(e){reject(Error('잘못된 요청입니다.'))}});req.on('error',reject)})}
 async function api(req,res,url){
   try{
-    if(req.method==='GET'&&url.pathname==='/api/health')return json(res,200,{ok:true,service:'last-signal-online'});
+    if(req.method==='GET'&&url.pathname==='/api/health')return json(res,200,{ok:true,service:'last-signal-online',persistence:PERSISTENCE_ENABLED?'supabase':'memory'});
     if(req.method==='POST'&&url.pathname==='/api/room/create'){const b=await readBody(req),x=createRoom(b.name);return json(res,200,{code:x.room.code,token:x.player.id})}
-    if(req.method==='POST'&&url.pathname==='/api/room/join'){const b=await readBody(req),x=joinRoom(String(b.code||''),b.name);return json(res,200,{code:x.room.code,token:x.player.id})}
-    if(req.method==='POST'&&url.pathname==='/api/ready'){const b=await readBody(req),{room,player}=auth(b);if(room.status!=='lobby')throw Error('대기실 단계가 아닙니다.');player.ready=!player.ready;broadcast(room);return json(res,200,{ok:true})}
-    if(req.method==='POST'&&url.pathname==='/api/start'){const b=await readBody(req),{room,player}=auth(b);if(room.hostId!==player.id)throw Error('방장만 시작할 수 있습니다.');startGame(room);return json(res,200,{ok:true})}
-    if(req.method==='POST'&&url.pathname==='/api/room/delete'){const b=await readBody(req),{room,player}=auth(b);if(room.hostId!==player.id)throw Error('방장만 방을 삭제할 수 있습니다.');deleteRoom(room);return json(res,200,{ok:true})}
-    if(req.method==='POST'&&url.pathname==='/api/state'){const b=await readBody(req),{room,player}=auth(b);return json(res,200,view(room,player))}
-    if(req.method==='POST'&&url.pathname==='/api/select'){const b=await readBody(req),{room,player}=auth(b);submit(room,player,b.kind,b.uid);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/room/join'){const b=await readBody(req),x=await joinRoom(String(b.code||''),b.name);return json(res,200,{code:x.room.code,token:x.player.id})}
+    if(req.method==='POST'&&url.pathname==='/api/ready'){const b=await readBody(req),{room,player}=await auth(b);if(room.status!=='lobby')throw Error('대기실 단계가 아닙니다.');player.ready=!player.ready;broadcast(room);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/start'){const b=await readBody(req),{room,player}=await auth(b);if(room.hostId!==player.id)throw Error('방장만 시작할 수 있습니다.');startGame(room);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/room/delete'){const b=await readBody(req),{room,player}=await auth(b);if(room.hostId!==player.id)throw Error('방장만 방을 삭제할 수 있습니다.');deleteRoom(room);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/state'){const b=await readBody(req),{room,player}=await auth(b);return json(res,200,view(room,player))}
+    if(req.method==='POST'&&url.pathname==='/api/select'){const b=await readBody(req),{room,player}=await auth(b);submit(room,player,b.kind,b.uid);return json(res,200,{ok:true})}
     if(req.method==='GET'&&url.pathname==='/api/events'){
-      const room=rooms.get(url.searchParams.get('code')),id=url.searchParams.get('token'),player=room?.players.find(p=>p.id===id);if(!room||!player)return json(res,401,{error:'접속 정보가 만료되었습니다.'});
+      const room=await getRoom(url.searchParams.get('code')),id=url.searchParams.get('token'),player=room?.players.find(p=>p.id===id);if(!room||!player)return json(res,401,{error:'접속 정보가 만료되었습니다.'});
       res.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache','connection':'keep-alive','x-accel-buffering':'no'});player.connected=true;room.clients.set(id,res);sendSse(res,view(room,player));broadcast(room);
       const ping=setInterval(()=>res.write(': ping\n\n'),20000);req.on('close',()=>{clearInterval(ping);room.clients.delete(id);player.connected=false;setTimeout(()=>broadcast(room),100)});return;
     }
@@ -263,4 +337,4 @@ function staticFile(req,res,url){
 const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://localhost');if(url.pathname.startsWith('/api/'))api(req,res,url);else staticFile(req,res,url)});
 server.listen(PORT,'0.0.0.0',()=>console.log(`LAST SIGNAL online server: http://localhost:${PORT}`));
 
-setInterval(()=>{const cutoff=Date.now()-6*60*60*1000;for(const [code,room] of rooms)if(room.updatedAt<cutoff){clearTimeout(room.timer);rooms.delete(code)}},30*60*1000).unref();
+setInterval(()=>{const cutoff=Date.now()-6*60*60*1000;for(const [code,room] of rooms)if(room.updatedAt<cutoff){clearTimeout(room.timer);rooms.delete(code);removePersistedRoom(code)}},30*60*1000).unref();
