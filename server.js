@@ -72,6 +72,7 @@ async function loadPersistedRoom(code){
   const state=rows?.[0]?.state;if(!state||state.status==='deleted')return null;
   const room={...state,code:String(state.code||code),clients:new Map(),timer:null};
   room.players=(room.players||[]).map(p=>({...p,connected:false}));room.effects=room.effects||[];room.logs=room.logs||[];room.pendingAttacks=room.pendingAttacks||{};
+  if(Number(room.rulesVersion||0)<2){for(const [playerId,packet] of Object.entries(room.pendingAttacks))if(packet?.attackerId==='presented')delete room.pendingAttacks[playerId];room.event=null;room.nextPresented=null;room.presentedDeck=[];room.rulesVersion=2}
   refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);return room;
 }
 async function getRoom(code){
@@ -103,7 +104,7 @@ const CARDS = {
   factory:{name:'군수공장',type:'production',rarity:'rare',text:'3라운드 동안 추가 보급'},
   scout:{name:'정찰',type:'intel',rarity:'common',text:'무작위 상대 손패 1장 확인'},
   intercept:{name:'감청',type:'intel',rarity:'common',text:'시작 플레이어 선택 확인'},
-  predict:{name:'예측',type:'intel',rarity:'common',text:'다음 사건 카드 확인'},
+  predict:{name:'예측',type:'intel',rarity:'common',text:'다음 플레이어의 공격 카드 수 확인'},
   hack:{name:'해킹',type:'intel',rarity:'common',text:'상대 일반 카드 1장 폐기'},
   wiretap:{name:'도청',type:'intel',rarity:'common',text:'공격 제출자 확인'},
   bluff:{name:'심리전',type:'intel',rarity:'common',text:'가짜 카드 신호 전송'},
@@ -162,7 +163,7 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
-  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:shuffle([...PRESENTED_ATTACK_POOL]),nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
+  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:2,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
   rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
 async function joinRoom(code,name){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
@@ -200,10 +201,11 @@ function applyEvent(room){
 }
 function beginRound(room){
   clearTimeout(room.timer);if(checkWinner(room))return;
-  room.round++;room.phase='turn';room.event=room.nextPresented||presentedAttack(room);room.nextPresented=null;room.revealIndex=0;room.revealCurrentId=null;room.effects=[];
+  room.round++;room.phase='turn';room.event=null;room.nextPresented=null;room.revealIndex=0;room.revealCurrentId=null;room.effects=[];
   for(const p of alive(room)){p.choice=null;p.choiceUsed=false;if(p.buffs.stock){for(let i=0;i<p.buffs.stock;i++)draw(room,p);p.buffs.stock=0}if(p.buffs.factory>0){draw(room,p);p.buffs.factory--}if(room.nextEnergy)draw(room,p)}room.nextEnergy=false;
-  room.turnOrder=ordered(room).map(p=>p.id);room.turnCursor=0;room.currentPlayerId=room.turnOrder[0];room.pendingAttacks[room.currentPlayerId]={attackerId:'presented',damage:room.event.damage,name:`제시 ${room.event.name}`,pierce:!!room.event.pierce,card:publicCard(room.event)};room.deadline=Date.now()+30000;
-  addLog(room,`ROUND ${room.round} · 제시 공격 「${room.event.name}」 → ${room.players[room.startIndex].name}`,'system');broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200);
+  room.turnOrder=ordered(room).map(p=>p.id);room.turnCursor=0;room.currentPlayerId=room.turnOrder[0];room.deadline=Date.now()+30000;
+  const first=room.players.find(p=>p.id===room.currentPlayerId),incoming=room.pendingAttacks[room.currentPlayerId];
+  addLog(room,incoming?`ROUND ${room.round} · ${first.name}이 ${incoming.name}에 대응합니다.`:`ROUND ${room.round} · ${first.name}부터 행동합니다.`,'system');broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200);
 }
 function forceTurn(room){
   if(room.phase!=='turn')return;const p=room.players.find(x=>x.id===room.currentPlayerId);if(!p||!p.alive){advanceTurn(room);return}
@@ -243,7 +245,7 @@ function utility(room,p,c){
   else if(c.id==='recycle'){const i=p.discard.findIndex(x=>x.rarity==='common');if(i>=0)p.hand.push(p.discard.splice(i,1)[0])}
   else if(c.id==='scout'&&others.length){const t=pick(others),seen=pick(t.hand);intel(p,`${t.name} 손패: ${seen?.name||'없음'}`)}
   else if(c.id==='intercept'){const t=room.players[room.startIndex];intel(p,`감청: ${t.name} — ${t.choice?.kind==='draw'?'카드 뽑기':t.choice?.card?.name}`)}
-  else if(c.id==='predict')intel(p,`다음 제시 공격: ${nextPresentedAttack(room).name}`);
+  else if(c.id==='predict'){const t=nextAlive(room,p),count=t.hand.filter(card=>card.type==='attack').length;intel(p,`예측: ${t.name}의 공격 카드 ${count}장`)}
   else if(c.id==='hack'){const valid=others.filter(x=>x.hand.length>4&&x.hand.some(c=>c.rarity==='common'));if(valid.length){const t=pick(valid),c=pick(t.hand.filter(x=>x.rarity==='common')),i=t.hand.indexOf(c);t.discard.push(t.hand.splice(i,1)[0]);addLog(room,`${p.name} 해킹 · ${t.name} 카드 폐기`)}}
   else if(c.id==='wiretap')intel(p,`공격 신호: ${alive(room).filter(x=>x.choice?.card?.type==='attack').map(x=>x.name).join(', ')||'없음'}`);
   else if(c.id==='bluff')addLog(room,`${p.name} 가짜 카드 신호 전송`);
@@ -289,7 +291,7 @@ function advanceTurn(room){
   const p=room.players.find(x=>x.id===room.turnOrder[room.turnCursor]);room.phase='turn';room.currentPlayerId=p.id;room.revealCurrentId=null;room.deadline=Date.now()+30000;broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200)
 }
 function finishSequentialRound(room){
-  for(const p of alive(room))while(p.hand.length>12)p.discard.push(p.hand.pop());const currentStart=room.players[room.startIndex];room.startIndex=room.players.indexOf(nextAlive(room,currentStart));room.phase='result';room.currentPlayerId=null;room.revealCurrentId=null;room.deadline=Date.now()+2200;addLog(room,`ROUND ${room.round} 종료`,'system');broadcast(room);room.timer=setTimeout(()=>beginRound(room),2200)
+  for(const p of alive(room))while(p.hand.length>12)p.discard.push(p.hand.pop());room.phase='result';room.currentPlayerId=null;room.revealCurrentId=null;room.deadline=Date.now()+2200;addLog(room,`ROUND ${room.round} 종료 · 시계방향 진행 계속`,'system');broadcast(room);room.timer=setTimeout(()=>beginRound(room),2200)
 }
 function resolveRound(room){
   if(room.phase!=='reveal')return;
