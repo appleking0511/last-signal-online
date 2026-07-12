@@ -53,6 +53,7 @@ const EVENTS = [
   {id:'drought',name:'자원 고갈',icon:'∅',text:'이번 라운드에는 카드를 뽑을 수 없습니다.'},
   {id:'race',name:'군비 경쟁',icon:'🔥',text:'공격 +3, 수치형 방어 +1.'}
 ];
+const OPENING_EVENT={id:'opening',name:'공격 개시',icon:'⚔',text:'첫 라운드는 공격 카드로 시작합니다. 시작 플레이어부터 시계방향으로 공개합니다.'};
 
 const pick = a => a[Math.floor(Math.random()*a.length)];
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
@@ -64,6 +65,9 @@ function alive(room){return room.players.filter(p=>p.alive)}
 function ordered(room){const out=[];for(let i=0;i<room.players.length;i++){const p=room.players[(room.startIndex+i)%room.players.length];if(p.alive)out.push(p)}return out}
 function nextAlive(room,p){let i=room.players.indexOf(p);do{i=(i+1)%room.players.length}while(!room.players[i].alive);return room.players[i]}
 function addLog(room,text,kind='normal'){room.logs.unshift({id:token().slice(0,8),text,kind,at:Date.now()});room.logs=room.logs.slice(0,80)}
+function addEffect(room,type,actor,target,card,text=''){
+  room.fxSeq=(room.fxSeq||0)+1;room.effects.push({seq:room.fxSeq,type,actorId:actor?.id||null,targetId:target?.id||null,card:publicCard(card),text});room.effects=room.effects.slice(-30);
+}
 function draw(room,p,forcedType=null,starter=false){
   let type=forcedType||pick(['attack','attack','attack','defense','defense','defense','production','production','intel']);
   let rarity='common';if(!starter){const r=Math.random();rarity=r<.01?'legendary':r<.16?'rare':'common'}
@@ -72,7 +76,7 @@ function draw(room,p,forcedType=null,starter=false){
   if(rarity==='legendary'&&p.hand.some(c=>c.id==='rainbow'))pool=POOLS[type].rare;
   const c=makeCard(pick(pool));p.hand.push(c);return c;
 }
-function initialHand(room,p){for(const type of ['attack','defense','production','intel']){draw(room,p,type,true);draw(room,p,type,true)}shuffle(p.hand)}
+function initialHand(room,p){for(const type of ['attack','defense','production','intel']){draw(room,p,type,true);draw(room,p,type,true)}shuffle(p.hand);const attackIndex=p.hand.findIndex(c=>c.type==='attack');if(attackIndex>0)[p.hand[0],p.hand[attackIndex]]=[p.hand[attackIndex],p.hand[0]]}
 function eventCard(room){if(!room.eventDeck.length)room.eventDeck=shuffle([...EVENTS]);return room.eventDeck.shift()}
 function heal(room,p,n){if(!p.alive)return;const was=p.hp;p.hp=Math.min(25,p.hp+n);if(p.hp>was)addLog(room,`${p.name} HP ${p.hp-was} 회복`,'good')}
 function hurt(room,p,n,source){if(!p.alive||n<=0)return;p.hp=Math.max(0,p.hp-n);addLog(room,`${p.name} ${n} 피해 · ${source}`,'hit');if(p.hp===0){p.alive=false;p.choice=null;addLog(room,`${p.name} 탈락`,'death')}}
@@ -81,19 +85,20 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
-  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],round:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),deadline:null,timer:null,nextEnergy:false,winner:null};
+  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),revealIndex:0,revealCurrentId:null,deadline:null,timer:null,nextEnergy:false,winner:null};
   rooms.set(code,room);return {room,player:host};
 }
 function joinRoom(code,name){const room=rooms.get(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
 function auth(body){const room=rooms.get(String(body.code||''));if(!room)throw Error('방을 찾을 수 없습니다.');const player=room.players.find(p=>p.id===body.token);if(!player)throw Error('접속 정보가 올바르지 않습니다.');return {room,player}}
 
 function view(room,me){
-  const reveal=['reveal','result','finished'].includes(room.phase);
+  const fullyRevealed=['result','finished'].includes(room.phase),revealedIds=new Set(room.phase==='reveal'?ordered(room).slice(0,room.revealIndex).map(p=>p.id):[]);
+  const visibleChoice=p=>fullyRevealed||revealedIds.has(p.id)||(room.phase==='select'&&p.id===me.id);
   return {
-    code:room.code,status:room.status,phase:room.phase,round:room.round,deadline:room.deadline,event:room.event,winner:room.winner,
+    code:room.code,status:room.status,phase:room.phase,round:room.round,deadline:room.deadline,event:room.event,winner:room.winner,revealIndex:room.revealIndex,revealCurrentId:room.revealCurrentId,
     hostId:room.hostId,meId:me.id,startPlayerId:room.players[room.startIndex]?.id,
-    players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(reveal||p.id===me.id?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
-    hand:me.hand.map(publicCard),intel:me.intel.slice(0,4),logs:room.logs.slice(0,30)
+    players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(visibleChoice(p)?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
+    hand:me.hand.map(publicCard),intel:me.intel.slice(0,4),logs:room.logs.slice(0,30),effects:room.effects.slice(-30)
   };
 }
 function sendSse(res,data){res.write(`data: ${JSON.stringify(data)}\n\n`)}
@@ -118,7 +123,7 @@ function applyEvent(room){
 }
 function beginRound(room){
   clearTimeout(room.timer);if(checkWinner(room))return;
-  room.round++;room.phase='select';room.event=eventCard(room);room.deadline=Date.now()+30000;
+  room.round++;room.phase='select';room.event=room.round===1?OPENING_EVENT:eventCard(room);room.revealIndex=0;room.revealCurrentId=null;room.effects=[];room.deadline=Date.now()+30000;
   for(const p of alive(room)){p.choice=null;p.choiceUsed=false;if(p.buffs.stock){for(let i=0;i<p.buffs.stock;i++)draw(room,p);p.buffs.stock=0}if(p.buffs.factory>0){draw(room,p);p.buffs.factory--}if(room.nextEnergy)draw(room,p)}room.nextEnergy=false;
   applyEvent(room);addLog(room,`ROUND ${room.round} · ${room.event.name}`,'system');broadcast(room);
   room.timer=setTimeout(()=>forceSelections(room),30200);
@@ -133,16 +138,23 @@ function submit(room,p,kind,uid){
   else {const c=p.hand.find(x=>x.uid===Number(uid));if(!c)throw Error('손패에 없는 카드입니다.');p.choice={kind:'card',card:c}}
   addLog(room,`${p.name} 선택 완료`,'quiet');broadcast(room);if(alive(room).every(x=>x.choice))beginReveal(room);
 }
-function beginReveal(room){if(room.phase!=='select')return;clearTimeout(room.timer);room.phase='reveal';room.deadline=Date.now()+2200;broadcast(room);room.timer=setTimeout(()=>resolveRound(room),2200)}
+function beginReveal(room){
+  if(room.phase!=='select')return;clearTimeout(room.timer);room.phase='reveal';room.revealIndex=0;room.revealCurrentId=null;room.deadline=Date.now()+650+ordered(room).length*1050+800;broadcast(room);room.timer=setTimeout(()=>revealNext(room),650)
+}
+function revealNext(room){
+  if(room.phase!=='reveal')return;const order=ordered(room);
+  if(room.revealIndex>=order.length){room.revealCurrentId=null;room.deadline=Date.now()+800;broadcast(room);room.timer=setTimeout(()=>resolveRound(room),800);return}
+  const player=order[room.revealIndex];room.revealCurrentId=player.id;room.revealIndex++;addLog(room,`${player.name} 카드 공개`,'reveal');broadcast(room);room.timer=setTimeout(()=>revealNext(room),1050)
+}
 function attackBonus(room){return room.event.id==='arms'?2:room.event.id==='race'?3:0}
 function defenseBonus(room){return room.event.id==='fortify'?2:room.event.id==='race'?1:0}
 function damageValue(room,p,c){let n=c.damage||0;if(p.buffs.weapon){n+=2;p.buffs.weapon--}n+=attackBonus(room);if(room.event.id==='peace')n=Math.ceil(n/2);return n}
 function attack(room,attacker,target,packet,depth=0){
   if(!attacker.alive||!target.alive)return;const tc=target.choice?.kind==='card'?target.choice.card:null;
-  if(tc&&!target.choiceUsed&&tc.type==='attack'&&!tc.counter){hurt(room,target,packet.damage,packet.name);consume(target,tc);addLog(room,`${target.name}의 공격 카드 충돌로 무효`);return}
-  if(tc&&!target.choiceUsed&&tc.counter&&!packet.noCounter){consume(target,tc);if(depth>=2){hurt(room,target,packet.damage,'반격 한도 초과');return}const next=nextAlive(room,target);addLog(room,`${target.name} 반격 · ${packet.damage+3} 피해 전달`,'good');attack(room,target,next,{damage:packet.damage+3,name:'반격'},depth+1);return}
+  if(tc&&!target.choiceUsed&&tc.type==='attack'&&!tc.counter){addEffect(room,'clash',target,attacker,tc,'공격 충돌');hurt(room,target,packet.damage,packet.name);consume(target,tc);addLog(room,`${target.name}의 공격 카드 충돌로 무효`);return}
+  if(tc&&!target.choiceUsed&&tc.counter&&!packet.noCounter){addEffect(room,'counter',target,nextAlive(room,target),tc,'반격');consume(target,tc);if(depth>=2){hurt(room,target,packet.damage,'반격 한도 초과');return}const next=nextAlive(room,target);addLog(room,`${target.name} 반격 · ${packet.damage+3} 피해 전달`,'good');attack(room,target,next,{damage:packet.damage+3,name:'반격'},depth+1);return}
   if(tc&&!target.choiceUsed&&tc.type==='defense'){
-    consume(target,tc);
+    addEffect(room,tc.reflect?'reflect':'defense',target,attacker,tc,tc.name);consume(target,tc);
     if(tc.rainbow||tc.full){addLog(room,`${target.name} ${tc.name} · 공격 무효`,'good');if(packet.allin)hurt(room,attacker,10,'이판사판 반동');return}
     if(tc.reflect&&!packet.noReflect){addLog(room,`${target.name} 가시 방어 · ${packet.damage} 반사`,'good');hurt(room,attacker,packet.damage,'가시 반사');return}
     if(packet.pierce){hurt(room,target,packet.damage,packet.name+' 관통');return}
@@ -152,6 +164,7 @@ function attack(room,attacker,target,packet,depth=0){
 }
 function utility(room,p,c){
   const others=alive(room).filter(x=>x!==p);
+  addEffect(room,c.type==='intel'?'intel':'production',p,null,c,c.name);
   if(c.id==='supply'){draw(room,p);draw(room,p);addLog(room,`${p.name} 카드 2장 보급`,'good')}
   else if(c.id==='heal')heal(room,p,3);
   else if(c.id==='forge'){p.buffs.weapon=Math.min(2,p.buffs.weapon+1);addLog(room,`${p.name} 무기 강화 준비`,'good')}
@@ -172,15 +185,15 @@ function resolveRound(room){
   if(room.phase!=='reveal')return;
   for(const p of ordered(room)){
     if(!p.alive||!p.choice||p.choiceUsed)continue;
-    if(p.choice.kind==='draw'){if(room.event.id!=='drought'){draw(room,p);addLog(room,`${p.name} 카드 1장 획득`)}p.choiceUsed=true;continue}
+    if(p.choice.kind==='draw'){addEffect(room,'draw',p,null,null,'카드 뽑기');if(room.event.id!=='drought'){draw(room,p);addLog(room,`${p.name} 카드 1장 획득`)}p.choiceUsed=true;continue}
     const c=p.choice.card;
-    if(c.type==='attack'&&!c.counter){const target=nextAlive(room,p),amount=damageValue(room,p,c);consume(p,c);addLog(room,`${p.name} ${c.name} → ${target.name}`,'hit');if(c.selfDamage)hurt(room,p,c.selfDamage,'등가교환 대가');if(p.alive)attack(room,p,target,{damage:amount,name:c.name,pierce:c.pierce,allin:c.allin})}
-    else if(c.type==='defense'||c.counter){consume(p,c);if(c.reflect)hurt(room,p,5,'가시 방어 실패');else addLog(room,`${p.name} ${c.name} · 막을 공격 없음`)}
+    if(c.type==='attack'&&!c.counter){const target=nextAlive(room,p),amount=damageValue(room,p,c);addEffect(room,'attack',p,target,c,c.name);consume(p,c);addLog(room,`${p.name} ${c.name} → ${target.name}`,'hit');if(c.selfDamage)hurt(room,p,c.selfDamage,'등가교환 대가');if(p.alive)attack(room,p,target,{damage:amount,name:c.name,pierce:c.pierce,allin:c.allin})}
+    else if(c.type==='defense'||c.counter){addEffect(room,c.counter?'counter':'defense',p,null,c,'대상 없음');consume(p,c);if(c.reflect)hurt(room,p,5,'가시 방어 실패');else addLog(room,`${p.name} ${c.name} · 막을 공격 없음`)}
     else {consume(p,c);utility(room,p,c)}
     if(checkWinner(room))return;
   }
   for(const p of alive(room))while(p.hand.length>12)p.discard.push(p.hand.pop());
-  room.startIndex=room.players.indexOf(nextAlive(room,room.players[room.startIndex]));room.phase='result';room.deadline=Date.now()+6000;broadcast(room);room.timer=setTimeout(()=>beginRound(room),6000);
+  room.startIndex=room.players.indexOf(nextAlive(room,room.players[room.startIndex]));room.phase='result';room.revealCurrentId=null;const resultDuration=Math.max(6000,room.effects.length*850+1400);room.deadline=Date.now()+resultDuration;broadcast(room);room.timer=setTimeout(()=>beginRound(room),resultDuration);
 }
 function checkWinner(room){const survivors=alive(room);if(survivors.length>1)return false;clearTimeout(room.timer);room.status='finished';room.phase='finished';room.winner=survivors[0]?{id:survivors[0].id,name:survivors[0].name}:null;room.deadline=null;addLog(room,room.winner?`${room.winner.name} 최종 승리`:'공동 탈락','system');broadcast(room);return true}
 
