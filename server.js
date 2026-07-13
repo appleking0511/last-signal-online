@@ -73,6 +73,7 @@ async function loadPersistedRoom(code){
   room.players=(room.players||[]).map(p=>({...p,connected:false}));room.effects=room.effects||[];room.logs=room.logs||[];room.pendingAttacks=room.pendingAttacks||{};
   if(Number(room.rulesVersion||0)<3){for(const [playerId,packet] of Object.entries(room.pendingAttacks))if(packet?.attackerId==='presented')delete room.pendingAttacks[playerId];room.event=null;room.nextPresented=null;room.presentedDeck=[];room.rulesVersion=3;room.turnNumber=Math.max(1,Number(room.turnNumber)||Number(room.round||0)*Math.max(1,room.players.length)+Number(room.turnCursor||0)+1);if(!['turn','turn_result'].includes(room.phase)){room.phase='turn';room.currentPlayerId=room.players[room.startIndex]?.id||room.players.find(p=>p.alive)?.id;const current=room.players.find(p=>p.id===room.currentPlayerId);if(current){current.choice=null;current.choiceUsed=false}room.revealCurrentId=null;room.deadline=Date.now()+30000}}
   if(Number(room.rulesVersion||0)<4){room.rulesVersion=4;for(const p of room.players)migratePlayerItems(room,p)}else for(const p of room.players){p.buffs={...blankBuffs(),...(p.buffs||{})};p.items=Array.isArray(p.items)?p.items:[];p.itemUsedThisTurn=!!p.itemUsedThisTurn}
+  if(Number(room.rulesVersion||0)<5){room.rulesVersion=5;for(const p of room.players)p.turnsTaken=0}else for(const p of room.players)p.turnsTaken=Math.max(0,Number(p.turnsTaken)||0);
   refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);return room;
 }
 async function getRoom(code){
@@ -135,6 +136,7 @@ const PRESENTED_ATTACK_POOL=['weak','weak','weak','strong','strong','pierce'];
 const PRESENTED_ATTACKER={id:'presented',name:'제시 공격',alive:true,system:true};
 
 const pick = a => a[Math.floor(Math.random()*a.length)];
+const DRAW_TYPE_POOL=['attack','attack','attack','attack','attack','defense','defense','production','production'];
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function token(){return crypto.randomBytes(18).toString('hex')}
 function roomCode(){let code;do{code=String(Math.floor(100000+Math.random()*900000))}while(rooms.has(code));return code}
@@ -143,8 +145,8 @@ function makeItem(id){return {id,uid:token().slice(0,12),...ITEMS[id]}}
 function randomItem(){return makeItem(Math.random()<.01?'evade':pick(NORMAL_ITEM_IDS))}
 function publicItem(item){return item?{id:item.id,uid:item.uid,name:item.name,text:item.text,target:!!item.target,legendary:!!item.legendary}:null}
 function blankBuffs(){return {weapon:0,shield:0,stock:0,factory:0,itemAttack:0,poison:0,poisonSourceId:null,weakness:0,fullEvade:0}}
-function makePlayer(name,index){return {id:token(),name:String(name||'플레이어').trim().slice(0,10),seat:index,ready:false,connected:true,hp:20,alive:true,hand:[],discard:[],items:[],itemUsedThisTurn:false,choice:null,choiceUsed:false,buffs:blankBuffs(),intel:[]}}
-function replacementCard(old){const type=pick(['attack','attack','defense','defense','production']),id=pick(POOLS[type].common);return {...makeCard(id),uid:old?.uid||cardUid++}}
+function makePlayer(name,index){return {id:token(),name:String(name||'플레이어').trim().slice(0,10),seat:index,ready:false,connected:true,hp:20,alive:true,hand:[],discard:[],items:[],itemUsedThisTurn:false,turnsTaken:0,choice:null,choiceUsed:false,buffs:blankBuffs(),intel:[]}}
+function replacementCard(old){const type=pick(DRAW_TYPE_POOL),id=pick(POOLS[type].common);return {...makeCard(id),uid:old?.uid||cardUid++}}
 function migratePlayerItems(room,p){
   p.buffs={...blankBuffs(),...(p.buffs||{})};p.items=Array.isArray(p.items)?p.items:[];p.itemUsedThisTurn=!!p.itemUsedThisTurn;p.intel=Array.isArray(p.intel)?p.intel:[];
   const convert=c=>c?.type==='intel'?replacementCard(c):c;p.hand=(p.hand||[]).map(convert);p.discard=(p.discard||[]).map(convert);
@@ -159,14 +161,14 @@ function addEffect(room,type,actor,target,card,text=''){
   room.fxSeq=(room.fxSeq||0)+1;room.effects.push({seq:room.fxSeq,type,actorId:actor?.id||null,targetId:target?.id||null,card:publicCard(card),text});room.effects=room.effects.slice(-30);
 }
 function draw(room,p,forcedType=null,starter=false){
-  let type=forcedType||pick(['attack','attack','attack','defense','defense','defense','production','production']);
+  let type=forcedType||pick(DRAW_TYPE_POOL);
   let rarity='common';if(!starter){const r=Math.random();rarity=r<.01?'legendary':r<.16?'rare':'common'}
   if(rarity==='legendary')type='defense';
   let pool=POOLS[type][rarity]||POOLS[type].common;
   if(rarity==='legendary'&&p.hand.some(c=>c.id==='rainbow'))pool=POOLS[type].rare;
   const c=makeCard(pick(pool));p.hand.push(c);return c;
 }
-function initialHand(room,p){for(const type of ['attack','attack','attack','defense','defense','defense','production','production'])draw(room,p,type,true);shuffle(p.hand)}
+function initialHand(room,p){for(const type of ['attack','attack','attack','attack','defense','defense','production','production'])draw(room,p,type,true);shuffle(p.hand)}
 function eventCard(room){if(!room.eventDeck.length)room.eventDeck=shuffle([...EVENTS]);return room.eventDeck.shift()}
 function presentedAttack(room){if(!room.presentedDeck.length)room.presentedDeck=shuffle([...PRESENTED_ATTACK_POOL]);const c=makeCard(room.presentedDeck.shift());return {...c,icon:'⚔',text:`제시 공격 · ${c.text}`}}
 function nextPresentedAttack(room){if(!room.nextPresented)room.nextPresented=presentedAttack(room);return room.nextPresented}
@@ -177,7 +179,7 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
-  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:4,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
+  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:5,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
   rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
 async function joinRoom(code,name){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
@@ -189,7 +191,7 @@ function view(room,me){
   return {
     code:room.code,status:room.status,phase:room.phase,turnNumber:room.turnNumber||0,deadline:room.deadline,event:room.event,winner:room.winner,revealIndex:room.revealIndex,revealCurrentId:room.revealCurrentId,currentPlayerId:room.currentPlayerId,currentIncoming:room.currentPlayerId&&room.pendingAttacks?.[room.currentPlayerId]?room.pendingAttacks[room.currentPlayerId]:null,
     hostId:room.hostId,meId:me.id,startPlayerId:room.players[room.startIndex]?.id,
-    players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,itemCount:p.items?.length||0,buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(visibleChoice(p)?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
+    players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,itemCount:p.items?.length||0,turnsTaken:p.turnsTaken||0,buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(visibleChoice(p)?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
     hand:me.hand.map(publicCard),items:(me.items||[]).map(publicItem),itemUsedThisTurn:!!me.itemUsedThisTurn,intel:me.intel.slice(0,6),logs:room.logs.slice(0,30),effects:room.effects.slice(-30)
   };
 }
@@ -204,7 +206,7 @@ function deleteRoom(room){
 
 function startGame(room){
   if(room.players.length<2)throw Error('최소 2명이 필요합니다.');if(!room.players.every(p=>p.ready))throw Error('모든 플레이어가 준비해야 합니다.');
-  room.status='playing';room.round=0;room.turnNumber=0;room.pendingAttacks={};room.currentPlayerId=null;room.players.forEach(p=>{p.hp=20;p.alive=true;p.hand=[];p.discard=[];p.items=[randomItem(),randomItem()];p.itemUsedThisTurn=false;p.choice=null;p.choiceUsed=false;p.buffs=blankBuffs();p.intel=[];initialHand(room,p)});room.startIndex=crypto.randomInt(room.players.length);const starter=room.players[room.startIndex];addLog(room,`게임 시작 · ${starter.name}이 무작위 시작자로 선정되었습니다.`,'system');beginContinuousTurn(room,starter,true);
+  room.status='playing';room.round=0;room.turnNumber=0;room.pendingAttacks={};room.currentPlayerId=null;room.players.forEach(p=>{p.hp=20;p.alive=true;p.hand=[];p.discard=[];p.items=[randomItem(),randomItem()];p.itemUsedThisTurn=false;p.turnsTaken=0;p.choice=null;p.choiceUsed=false;p.buffs=blankBuffs();p.intel=[];initialHand(room,p)});room.startIndex=crypto.randomInt(room.players.length);const starter=room.players[room.startIndex];addLog(room,`게임 시작 · ${starter.name}이 무작위 시작자로 선정되었습니다.`,'system');beginContinuousTurn(room,starter,true);
 }
 function applyEvent(room){
   const id=room.event.id;
@@ -218,6 +220,9 @@ function beginContinuousTurn(room,p,initial=false){
   room.phase='turn';room.event=null;room.currentPlayerId=p.id;room.revealCurrentId=null;room.turnNumber=(room.turnNumber||0)+1;p.choice=null;p.choiceUsed=false;p.itemUsedThisTurn=false;
   if(p.buffs.poison){const source=room.players.find(x=>x.id===p.buffs.poisonSourceId);p.buffs.poison=0;p.buffs.poisonSourceId=null;addEffect(room,'damage',source||p,p,null,'독화살 · 2 피해');hurt(room,p,2,'독화살');if(!p.alive){if(checkWinner(room))return;return beginContinuousTurn(room,nextAlive(room,p))}}
   if(p.buffs.fullEvade&&room.pendingAttacks[p.id]){const incoming=room.pendingAttacks[p.id];delete room.pendingAttacks[p.id];p.buffs.fullEvade=0;addEffect(room,'defense',p,p,ITEMS.evade,'완전회피');addLog(room,`${p.name} 완전회피 · ${incoming.name} 무효`,'good')}
+  p.turnsTaken=(Number(p.turnsTaken)||0)+1;
+  if(p.hand.length<12){draw(room,p);addEffect(room,'draw',p,p,null,'턴 시작 자동 수급');addLog(room,`${p.name} 턴 시작 · 카드 1장 자동 수급`,'good')}else addLog(room,`${p.name} 손패 최대 · 자동 카드 수급 보류`,'quiet');
+  if(p.turnsTaken%2===0){p.items.push(randomItem());addEffect(room,'item_gain',p,p,null,'2턴 보상 아이템 획득');addLog(room,`${p.name} 개인 턴 2회 보상 · 아이템 1개 자동 수급`,'good')}
   if(p.buffs.stock){for(let i=0;i<p.buffs.stock;i++)draw(room,p);p.buffs.stock=0}if(p.buffs.factory>0){draw(room,p);p.buffs.factory--}if(room.nextEnergy){draw(room,p);room.nextEnergy=false}
   while(p.hand.length>12)p.discard.push(p.hand.pop());room.deadline=Date.now()+30000;const incoming=room.pendingAttacks[p.id];
   if(!initial)addLog(room,incoming?`TURN ${room.turnNumber} · ${p.name}이 ${incoming.name}에 대응합니다.`:`TURN ${room.turnNumber} · ${p.name}의 차례`,'system');broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200);
