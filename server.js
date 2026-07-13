@@ -63,8 +63,7 @@ function resumeRoomTimer(room){
   const delay=Math.max(50,(Number(room.deadline)||Date.now())-Date.now()+200);
   if(room.phase==='turn')room.timer=setTimeout(()=>forceTurn(room),delay);
   else if(room.phase==='turn_result')room.timer=setTimeout(()=>advanceTurn(room),delay);
-  else if(room.phase==='result')room.timer=setTimeout(()=>beginRound(room),delay);
-  else room.timer=setTimeout(()=>beginRound(room),50);
+  else room.timer=setTimeout(()=>recoverContinuousTurn(room),50);
 }
 async function loadPersistedRoom(code){
   if(!PERSISTENCE_ENABLED)return null;
@@ -72,7 +71,7 @@ async function loadPersistedRoom(code){
   const state=rows?.[0]?.state;if(!state||state.status==='deleted')return null;
   const room={...state,code:String(state.code||code),clients:new Map(),timer:null};
   room.players=(room.players||[]).map(p=>({...p,connected:false}));room.effects=room.effects||[];room.logs=room.logs||[];room.pendingAttacks=room.pendingAttacks||{};
-  if(Number(room.rulesVersion||0)<2){for(const [playerId,packet] of Object.entries(room.pendingAttacks))if(packet?.attackerId==='presented')delete room.pendingAttacks[playerId];room.event=null;room.nextPresented=null;room.presentedDeck=[];room.rulesVersion=2}
+  if(Number(room.rulesVersion||0)<3){for(const [playerId,packet] of Object.entries(room.pendingAttacks))if(packet?.attackerId==='presented')delete room.pendingAttacks[playerId];room.event=null;room.nextPresented=null;room.presentedDeck=[];room.rulesVersion=3;room.turnNumber=Math.max(1,Number(room.turnNumber)||Number(room.round||0)*Math.max(1,room.players.length)+Number(room.turnCursor||0)+1);if(!['turn','turn_result'].includes(room.phase)){room.phase='turn';room.currentPlayerId=room.players[room.startIndex]?.id||room.players.find(p=>p.alive)?.id;const current=room.players.find(p=>p.id===room.currentPlayerId);if(current){current.choice=null;current.choiceUsed=false}room.revealCurrentId=null;room.deadline=Date.now()+30000}}
   refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);return room;
 }
 async function getRoom(code){
@@ -163,7 +162,7 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
-  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:2,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
+  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:3,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},deadline:null,timer:null,nextEnergy:false,winner:null};
   rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
 async function joinRoom(code,name){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
@@ -173,7 +172,7 @@ function view(room,me){
   const fullyRevealed=['turn','turn_result','result','finished'].includes(room.phase),revealedIds=new Set(room.phase==='reveal'?ordered(room).slice(0,room.revealIndex).map(p=>p.id):[]);
   const visibleChoice=p=>fullyRevealed||revealedIds.has(p.id)||(room.phase==='select'&&p.id===me.id);
   return {
-    code:room.code,status:room.status,phase:room.phase,round:room.round,deadline:room.deadline,event:room.event,winner:room.winner,revealIndex:room.revealIndex,revealCurrentId:room.revealCurrentId,currentPlayerId:room.currentPlayerId,currentIncoming:room.currentPlayerId&&room.pendingAttacks?.[room.currentPlayerId]?room.pendingAttacks[room.currentPlayerId]:null,
+    code:room.code,status:room.status,phase:room.phase,turnNumber:room.turnNumber||0,deadline:room.deadline,event:room.event,winner:room.winner,revealIndex:room.revealIndex,revealCurrentId:room.revealCurrentId,currentPlayerId:room.currentPlayerId,currentIncoming:room.currentPlayerId&&room.pendingAttacks?.[room.currentPlayerId]?room.pendingAttacks[room.currentPlayerId]:null,
     hostId:room.hostId,meId:me.id,startPlayerId:room.players[room.startIndex]?.id,
     players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(visibleChoice(p)?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
     hand:me.hand.map(publicCard),intel:me.intel.slice(0,4),logs:room.logs.slice(0,30),effects:room.effects.slice(-30)
@@ -190,7 +189,7 @@ function deleteRoom(room){
 
 function startGame(room){
   if(room.players.length<2)throw Error('최소 2명이 필요합니다.');if(!room.players.every(p=>p.ready))throw Error('모든 플레이어가 준비해야 합니다.');
-  room.status='playing';room.round=0;room.pendingAttacks={};room.currentPlayerId=null;room.players.forEach(p=>{p.hp=20;p.alive=true;p.hand=[];p.discard=[];p.choice=null;p.choiceUsed=false;p.buffs={weapon:0,shield:0,stock:0,factory:0};initialHand(room,p)});room.startIndex=Math.floor(Math.random()*room.players.length);addLog(room,'게임 시작 · 마지막 생존자를 결정합니다.','system');beginRound(room);
+  room.status='playing';room.round=0;room.turnNumber=0;room.pendingAttacks={};room.currentPlayerId=null;room.players.forEach(p=>{p.hp=20;p.alive=true;p.hand=[];p.discard=[];p.choice=null;p.choiceUsed=false;p.buffs={weapon:0,shield:0,stock:0,factory:0};initialHand(room,p)});room.startIndex=crypto.randomInt(room.players.length);const starter=room.players[room.startIndex];addLog(room,`게임 시작 · ${starter.name}이 무작위 시작자로 선정되었습니다.`,'system');beginContinuousTurn(room,starter,true);
 }
 function applyEvent(room){
   const id=room.event.id;
@@ -199,13 +198,15 @@ function applyEvent(room){
   if(id==='energy')room.nextEnergy=true;
   if(id==='market')alive(room).forEach(p=>{if(p.hand.length)p.discard.push(p.hand.splice(Math.floor(Math.random()*p.hand.length),1)[0]);draw(room,p);draw(room,p)});
 }
-function beginRound(room){
-  clearTimeout(room.timer);if(checkWinner(room))return;
-  room.round++;room.phase='turn';room.event=null;room.nextPresented=null;room.revealIndex=0;room.revealCurrentId=null;room.effects=[];
-  for(const p of alive(room)){p.choice=null;p.choiceUsed=false;if(p.buffs.stock){for(let i=0;i<p.buffs.stock;i++)draw(room,p);p.buffs.stock=0}if(p.buffs.factory>0){draw(room,p);p.buffs.factory--}if(room.nextEnergy)draw(room,p)}room.nextEnergy=false;
-  room.turnOrder=ordered(room).map(p=>p.id);room.turnCursor=0;room.currentPlayerId=room.turnOrder[0];room.deadline=Date.now()+30000;
-  const first=room.players.find(p=>p.id===room.currentPlayerId),incoming=room.pendingAttacks[room.currentPlayerId];
-  addLog(room,incoming?`ROUND ${room.round} · ${first.name}이 ${incoming.name}에 대응합니다.`:`ROUND ${room.round} · ${first.name}부터 행동합니다.`,'system');broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200);
+function beginContinuousTurn(room,p,initial=false){
+  clearTimeout(room.timer);if(room.status!=='playing'||checkWinner(room))return;if(!p?.alive)p=alive(room)[0];
+  room.phase='turn';room.event=null;room.currentPlayerId=p.id;room.revealCurrentId=null;room.turnNumber=(room.turnNumber||0)+1;p.choice=null;p.choiceUsed=false;
+  if(p.buffs.stock){for(let i=0;i<p.buffs.stock;i++)draw(room,p);p.buffs.stock=0}if(p.buffs.factory>0){draw(room,p);p.buffs.factory--}if(room.nextEnergy){draw(room,p);room.nextEnergy=false}
+  while(p.hand.length>12)p.discard.push(p.hand.pop());room.deadline=Date.now()+30000;const incoming=room.pendingAttacks[p.id];
+  if(!initial)addLog(room,incoming?`TURN ${room.turnNumber} · ${p.name}이 ${incoming.name}에 대응합니다.`:`TURN ${room.turnNumber} · ${p.name}의 차례`,'system');broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200);
+}
+function recoverContinuousTurn(room){
+  const current=room.players.find(p=>p.id===room.currentPlayerId&&p.alive)||room.players[room.startIndex]||alive(room)[0];beginContinuousTurn(room,current)
 }
 function forceTurn(room){
   if(room.phase!=='turn')return;const p=room.players.find(x=>x.id===room.currentPlayerId);if(!p||!p.alive){advanceTurn(room);return}
@@ -286,28 +287,7 @@ function resolveFreeTurn(room,p,choice){
   consume(p,card);utility(room,p,card)
 }
 function advanceTurn(room){
-  if(room.status!=='playing'||checkWinner(room))return;room.turnCursor++;while(room.turnCursor<room.turnOrder.length&&!room.players.find(p=>p.id===room.turnOrder[room.turnCursor])?.alive)room.turnCursor++;
-  if(room.turnCursor>=room.turnOrder.length){finishSequentialRound(room);return}
-  const p=room.players.find(x=>x.id===room.turnOrder[room.turnCursor]);room.phase='turn';room.currentPlayerId=p.id;room.revealCurrentId=null;room.deadline=Date.now()+30000;broadcast(room);room.timer=setTimeout(()=>forceTurn(room),30200)
-}
-function finishSequentialRound(room){
-  for(const p of alive(room))while(p.hand.length>12)p.discard.push(p.hand.pop());room.phase='result';room.currentPlayerId=null;room.revealCurrentId=null;room.deadline=Date.now()+2200;addLog(room,`ROUND ${room.round} 종료 · 시계방향 진행 계속`,'system');broadcast(room);room.timer=setTimeout(()=>beginRound(room),2200)
-}
-function resolveRound(room){
-  if(room.phase!=='reveal')return;
-  const first=room.players[room.startIndex],presented=room.event;
-  if(first?.alive){addEffect(room,'attack',PRESENTED_ATTACKER,first,presented,`제시 공격 · ${presented.name}`);addLog(room,`제시 공격 「${presented.name}」 → ${first.name}`,'hit');attack(room,PRESENTED_ATTACKER,first,{damage:presented.damage,name:`제시 ${presented.name}`,pierce:presented.pierce,presented:true});if(checkWinner(room))return}
-  for(const p of ordered(room)){
-    if(!p.alive||!p.choice||p.choiceUsed)continue;
-    if(p.choice.kind==='draw'){addEffect(room,'draw',p,null,null,'카드 뽑기');if(room.event.id!=='drought'){draw(room,p);addLog(room,`${p.name} 카드 1장 획득`)}p.choiceUsed=true;continue}
-    const c=p.choice.card;
-    if(c.type==='attack'&&!c.counter){const target=nextAlive(room,p),amount=damageValue(room,p,c);addEffect(room,'attack',p,target,c,c.name);consume(p,c);addLog(room,`${p.name} ${c.name} → ${target.name}`,'hit');if(c.selfDamage)hurt(room,p,c.selfDamage,'등가교환 대가');if(p.alive)attack(room,p,target,{damage:amount,name:c.name,pierce:c.pierce,allin:c.allin})}
-    else if(c.type==='defense'||c.counter){addEffect(room,c.counter?'counter':'defense',p,null,c,'대상 없음');consume(p,c);if(c.reflect)hurt(room,p,5,'가시 방어 실패');else addLog(room,`${p.name} ${c.name} · 막을 공격 없음`)}
-    else {consume(p,c);utility(room,p,c)}
-    if(checkWinner(room))return;
-  }
-  for(const p of alive(room))while(p.hand.length>12)p.discard.push(p.hand.pop());
-  room.startIndex=room.players.indexOf(nextAlive(room,room.players[room.startIndex]));room.phase='result';room.revealCurrentId=null;const resultDuration=Math.max(6000,room.effects.length*850+1400);room.deadline=Date.now()+resultDuration;broadcast(room);room.timer=setTimeout(()=>beginRound(room),resultDuration);
+  if(room.status!=='playing'||checkWinner(room))return;const current=room.players.find(p=>p.id===room.currentPlayerId);if(!current)return recoverContinuousTurn(room);while(current.hand.length>12)current.discard.push(current.hand.pop());beginContinuousTurn(room,nextAlive(room,current))
 }
 function checkWinner(room){const survivors=alive(room);if(survivors.length>1)return false;clearTimeout(room.timer);room.status='finished';room.phase='finished';room.winner=survivors[0]?{id:survivors[0].id,name:survivors[0].name}:null;room.deadline=null;addLog(room,room.winner?`${room.winner.name} 최종 승리`:'공동 탈락','system');broadcast(room);return true}
 
