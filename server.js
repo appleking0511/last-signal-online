@@ -91,6 +91,7 @@ const CARDS = {
   counter:{name:'반격',type:'attack',rarity:'common',text:'공격을 막고 피해 +3 전달',counter:true},
   allin:{name:'이판사판 공격',type:'attack',rarity:'rare',text:'10 피해 · 완전 방어 시 반동',damage:10,allin:true},
   pierce:{name:'관통 공격',type:'attack',rarity:'rare',text:'일반 방어를 무시하는 4 피해',damage:4,pierce:true},
+  guided:{name:'유도탄',type:'attack',rarity:'rare',text:'원하는 생존자에게 4 피해 · 대상 차례에 대응',damage:4,chooseTarget:true},
   block3:{name:'적당한 방어',type:'defense',rarity:'common',text:'들어온 피해 3 감소',block:3},
   block5:{name:'괜찮은 방어',type:'defense',rarity:'common',text:'들어온 피해 5 감소',block:5},
   full:{name:'완전한 방어',type:'defense',rarity:'rare',text:'공격 피해 완전 무효',full:true},
@@ -105,7 +106,7 @@ const CARDS = {
   factory:{name:'군수공장',type:'production',rarity:'rare',text:'다음 3번의 자신의 차례마다 카드 1장'},
 };
 const POOLS = {
-  attack:{common:['weak','weak','strong','trade','counter'],rare:['allin','pierce']},
+  attack:{common:['weak','weak','strong','trade','counter'],rare:['allin','pierce','guided','guided']},
   defense:{common:['block3','block3','block5'],rare:['full','thorn'],legendary:['rainbow']},
   production:{common:['supply','heal','forge','shield','stock','recycle'],rare:['factory']}
 };
@@ -114,12 +115,14 @@ const ITEMS = {
   reveal:{name:'넌 내 손 안에 있어',text:'선택한 상대의 손패를 모두 확인',target:true},
   scramble:{name:'해킹',text:'선택한 상대의 손패를 같은 수의 무작위 카드로 교체',target:true},
   warrior:{name:'긍지 높은 전사',text:'다음 공격 피해 +2',target:false},
-  poison:{name:'독화살',text:'선택한 상대의 다음 차례 시작 시 2 피해',target:true},
+  poison:{name:'독화살',text:'선택한 상대의 다음 차례 행동 확정 시 2 피해',target:true},
   weakness:{name:'약점 간파',text:'선택한 상대가 다음 공격을 방어할 수 없음',target:true},
   tax:{name:'원천징수',text:'선택한 상대에게서 무작위 카드 최대 2장 강탈',target:true},
+  cleanse:{name:'정화제',text:'자신에게 적용된 독화살과 약점 간파 제거',target:false},
+  shift:{name:'전술 교대',text:'선택한 상대와 자리를 바꿔 턴 순서와 공격 방향 변경',target:true},
   evade:{name:'완전회피',text:'들어온 공격 또는 다음 공격을 완전히 무효화',target:false,legendary:true}
 };
-const NORMAL_ITEM_IDS=['swap','reveal','scramble','warrior','poison','weakness','tax'];
+const NORMAL_ITEM_IDS=['swap','reveal','scramble','warrior','poison','weakness','tax','cleanse','shift'];
 const EVENTS = [
   {id:'mass',name:'대량 보급',icon:'📦',text:'모든 생존자가 카드 1장을 뽑습니다.'},
   {id:'peace',name:'평화 협정',icon:'☮',text:'이번 라운드 모든 공격 피해가 절반입니다.'},
@@ -175,7 +178,7 @@ function nextPresentedAttack(room){if(!room.nextPresented)room.nextPresented=pre
 function heal(room,p,n){if(!p.alive)return;const was=p.hp;p.hp=Math.min(25,p.hp+n);if(p.hp>was)addLog(room,`${p.name} HP ${p.hp-was} 회복`,'good')}
 function hurt(room,p,n,source){if(!p.alive||n<=0)return;p.hp=Math.max(0,p.hp-n);addLog(room,`${p.name} ${n} 피해 · ${source}`,'hit');if(p.hp===0){p.alive=false;p.choice=null;delete room.pendingAttacks[p.id];addLog(room,`${p.name} 탈락`,'death')}}
 function consume(p,c){const i=p.hand.findIndex(x=>x.uid===c.uid);if(i>=0)p.discard.push(p.hand.splice(i,1)[0]);p.choiceUsed=true}
-function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarity:c.rarity,text:c.text}:null}
+function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarity:c.rarity,text:c.text,chooseTarget:!!c.chooseTarget}:null}
 
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
@@ -191,7 +194,7 @@ function view(room,me){
   return {
     code:room.code,status:room.status,phase:room.phase,turnNumber:room.turnNumber||0,deadline:room.deadline,event:room.event,winner:room.winner,revealIndex:room.revealIndex,revealCurrentId:room.revealCurrentId,currentPlayerId:room.currentPlayerId,currentIncoming:room.currentPlayerId&&room.pendingAttacks?.[room.currentPlayerId]?room.pendingAttacks[room.currentPlayerId]:null,
     hostId:room.hostId,meId:me.id,startPlayerId:room.players[room.startIndex]?.id,
-    players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,itemCount:p.items?.length||0,turnsTaken:p.turnsTaken||0,buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(visibleChoice(p)?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
+    players:room.players.map(p=>({id:p.id,name:p.name,seat:p.seat,ready:p.ready,connected:p.connected,hp:p.hp,alive:p.alive,handCount:p.hand.length,itemCount:p.items?.length||0,turnsTaken:p.turnsTaken||0,pendingAttack:!!room.pendingAttacks?.[p.id],buffs:p.buffs,submitted:!!p.choice,choice:p.choice?(visibleChoice(p)?{kind:p.choice.kind,card:publicCard(p.choice.card)}:{kind:'hidden'}):null})),
     hand:me.hand.map(publicCard),items:(me.items||[]).map(publicItem),itemUsedThisTurn:!!me.itemUsedThisTurn,intel:me.intel.slice(0,6),logs:room.logs.slice(0,30),effects:room.effects.slice(-30)
   };
 }
@@ -218,7 +221,6 @@ function applyEvent(room){
 function beginContinuousTurn(room,p,initial=false){
   clearTimeout(room.timer);if(room.status!=='playing'||checkWinner(room))return;if(!p?.alive)p=alive(room)[0];
   room.phase='turn';room.event=null;room.currentPlayerId=p.id;room.revealCurrentId=null;room.turnNumber=(room.turnNumber||0)+1;p.choice=null;p.choiceUsed=false;p.itemUsedThisTurn=false;
-  if(p.buffs.poison){const source=room.players.find(x=>x.id===p.buffs.poisonSourceId);p.buffs.poison=0;p.buffs.poisonSourceId=null;addEffect(room,'damage',source||p,p,null,'독화살 · 2 피해');hurt(room,p,2,'독화살');if(!p.alive){if(checkWinner(room))return;return beginContinuousTurn(room,nextAlive(room,p))}}
   if(p.buffs.fullEvade&&room.pendingAttacks[p.id]){const incoming=room.pendingAttacks[p.id];delete room.pendingAttacks[p.id];p.buffs.fullEvade=0;addEffect(room,'defense',p,p,ITEMS.evade,'완전회피');addLog(room,`${p.name} 완전회피 · ${incoming.name} 무효`,'good')}
   p.turnsTaken=(Number(p.turnsTaken)||0)+1;
   if(p.hand.length<12){draw(room,p);addEffect(room,'draw',p,p,null,'턴 시작 자동 수급');addLog(room,`${p.name} 턴 시작 · 카드 1장 자동 수급`,'good')}else addLog(room,`${p.name} 손패 최대 · 자동 카드 수급 보류`,'quiet');
@@ -232,18 +234,19 @@ function recoverContinuousTurn(room){
 }
 function forceTurn(room){
   if(room.phase!=='turn')return;const p=room.players.find(x=>x.id===room.currentPlayerId);if(!p||!p.alive){advanceTurn(room);return}
-  if(p.hand.length>=12){const c=pick(p.hand);p.choice=c?{kind:'card',card:c}:{kind:'draw'}}else p.choice={kind:'draw'};addLog(room,`${p.name} 시간 종료 · 자동 선택`,'quiet');resolveSubmittedTurn(room,p);
+  if(p.hand.length>=12){const targets=alive(room).filter(x=>x!==p&&!room.pendingAttacks[x.id]),cards=p.hand.filter(c=>!c.chooseTarget||targets.length),c=pick(cards);p.choice=c?{kind:'card',card:c,targetId:c.chooseTarget?pick(targets)?.id:null}:{kind:'draw'}}else p.choice={kind:'draw'};addLog(room,`${p.name} 시간 종료 · 자동 선택`,'quiet');resolveSubmittedTurn(room,p);
 }
-function submit(room,p,kind,uid){
+function submit(room,p,kind,uid,targetId){
   if(room.phase!=='turn')throw Error('지금은 카드를 선택할 수 없습니다.');if(room.currentPlayerId!==p.id)throw Error('아직 당신의 차례가 아닙니다.');if(!p.alive)throw Error('탈락한 플레이어입니다.');if(p.choice)throw Error('이미 선택을 확정했습니다.');
   if(kind==='draw'){if(p.hand.length>=12)throw Error('손패가 가득 찼습니다.');p.choice={kind:'draw'};}
-  else {const c=p.hand.find(x=>x.uid===Number(uid));if(!c)throw Error('손패에 없는 카드입니다.');if(room.pendingAttacks[p.id]&&p.buffs.weakness&&c.type==='defense')throw Error('약점이 간파되어 이번 공격에는 방어 카드를 사용할 수 없습니다.');p.choice={kind:'card',card:c}}
+  else {const c=p.hand.find(x=>x.uid===Number(uid));if(!c)throw Error('손패에 없는 카드입니다.');if(room.pendingAttacks[p.id]&&p.buffs.weakness&&c.type==='defense')throw Error('약점이 간파되어 이번 공격에는 방어 카드를 사용할 수 없습니다.');let chosenTarget=null;if(c.chooseTarget&&!room.pendingAttacks[p.id]){chosenTarget=room.players.find(x=>x.id===targetId&&x.alive&&x!==p);if(!chosenTarget)throw Error('유도탄을 발사할 상대를 선택하세요.');if(room.pendingAttacks[chosenTarget.id])throw Error('이미 공격을 기다리는 플레이어에게는 유도탄을 발사할 수 없습니다.')}p.choice={kind:'card',card:c,targetId:chosenTarget?.id||null}}
   addLog(room,`${p.name} 카드 제출`,'quiet');resolveSubmittedTurn(room,p);
 }
 function useItem(room,p,uid,targetId){
   if(room.phase!=='turn'||room.currentPlayerId!==p.id)throw Error('아이템은 자신의 차례에만 사용할 수 있습니다.');if(!p.alive)throw Error('탈락한 플레이어입니다.');if(p.choice)throw Error('카드를 선택하기 전에 아이템을 사용해야 합니다.');if(p.itemUsedThisTurn)throw Error('한 턴에는 아이템을 1개만 사용할 수 있습니다.');
   const index=(p.items||[]).findIndex(item=>item.uid===String(uid));if(index<0)throw Error('보유하지 않은 아이템입니다.');const item=p.items[index];let target=null;
   if(item.target){target=room.players.find(x=>x.id===targetId&&x.alive&&x!==p);if(!target)throw Error('유효한 상대를 선택하세요.')}
+  if(item.id==='cleanse'&&!p.buffs.poison&&!p.buffs.weakness)throw Error('현재 제거할 독화살 또는 약점 간파 효과가 없습니다.');
   p.items.splice(index,1);p.itemUsedThisTurn=true;addEffect(room,'item',p,target,item,item.name);
   if(item.id==='swap'){const mine=p.hand;p.hand=target.hand;target.hand=mine;addLog(room,`${p.name} 등가교환 · ${target.name}과 손패 전체 교환`,'good')}
   else if(item.id==='reveal'){intel(p,`${target.name} 전체 손패: ${target.hand.map(c=>c.name).join(', ')||'없음'}`);addLog(room,`${p.name}이 ${target.name}의 손패를 간파했습니다.`,'good')}
@@ -252,6 +255,8 @@ function useItem(room,p,uid,targetId){
   else if(item.id==='poison'){target.buffs.poison=2;target.buffs.poisonSourceId=p.id;addLog(room,`${p.name} 독화살 → ${target.name}`,'hit')}
   else if(item.id==='weakness'){target.buffs.weakness=1;addLog(room,`${p.name} 약점 간파 → ${target.name}`,'hit')}
   else if(item.id==='tax'){const count=Math.min(2,target.hand.length);for(let i=0;i<count;i++){const n=crypto.randomInt(target.hand.length);p.hand.push(target.hand.splice(n,1)[0])}addLog(room,`${p.name} 원천징수 · ${target.name}에게서 카드 ${count}장 강탈`,'good')}
+  else if(item.id==='cleanse'){p.buffs.poison=0;p.buffs.poisonSourceId=null;p.buffs.weakness=0;addLog(room,`${p.name} 정화제 · 독화살과 약점 간파 제거`,'good')}
+  else if(item.id==='shift'){const startId=room.players[room.startIndex]?.id,a=room.players.indexOf(p),b=room.players.indexOf(target);[room.players[a],room.players[b]]=[room.players[b],room.players[a]];room.players.forEach((x,i)=>x.seat=i);room.startIndex=Math.max(0,room.players.findIndex(x=>x.id===startId));addLog(room,`${p.name} 전술 교대 · ${target.name}과 자리 및 턴 순서 교환`,'good')}
   else if(item.id==='evade'){const incoming=room.pendingAttacks[p.id];if(incoming){delete room.pendingAttacks[p.id];addLog(room,`${p.name} 완전회피 · ${incoming.name} 즉시 무효`,'good')}else{p.buffs.fullEvade=1;addLog(room,`${p.name} 완전회피 준비 · 다음 공격 무효`,'good')}}
   broadcast(room);
 }
@@ -289,6 +294,7 @@ function queueAttack(room,attacker,target,packet,card){
 function incomingAttacker(room,incoming){return incoming.attackerId==='presented'?PRESENTED_ATTACKER:room.players.find(p=>p.id===incoming.attackerId)}
 function resolveSubmittedTurn(room,p){
   if(room.phase!=='turn'||room.currentPlayerId!==p.id||!p.choice)return;clearTimeout(room.timer);room.phase='turn_result';room.revealCurrentId=p.id;room.deadline=null;const effectsBefore=room.effects.length;
+  if(p.buffs.poison){const source=room.players.find(x=>x.id===p.buffs.poisonSourceId);p.buffs.poison=0;p.buffs.poisonSourceId=null;addEffect(room,'damage',source||p,p,null,'독화살 · 2 피해');hurt(room,p,2,'독화살');if(!p.alive){p.choice=null;if(checkWinner(room))return;const delay=1250;room.deadline=Date.now()+delay;broadcast(room);room.timer=setTimeout(()=>advanceTurn(room),delay);return}}
   let incoming=room.pendingAttacks[p.id]||null;delete room.pendingAttacks[p.id];const attacker=incoming?incomingAttacker(room,incoming):null;
   if(incoming&&(!attacker||!attacker.alive)){addLog(room,`${incoming.name} · 공격자가 탈락해 소멸`);incoming=null}
   if(incoming)resolveIncomingTurn(room,p,p.choice,incoming,attacker);else resolveFreeTurn(room,p,p.choice);
@@ -311,7 +317,7 @@ function resolveIncomingTurn(room,p,choice,incoming,attacker){
 function resolveFreeTurn(room,p,choice){
   if(choice.kind==='draw'){draw(room,p);p.choiceUsed=true;addEffect(room,'draw',p,null,null,'카드 뽑기');addLog(room,`${p.name} 카드 1장 획득`);return}
   const card=choice.card;
-  if(card.type==='attack'&&!card.counter){const target=nextAlive(room,p),amount=damageValue(room,p,card);addEffect(room,'attack',p,target,card,card.name);consume(p,card);addLog(room,`${p.name} ${card.name} → ${target.name}`,'hit');if(card.selfDamage)hurt(room,p,card.selfDamage,'등가교환 대가');if(p.alive)queueAttack(room,p,target,{damage:amount,name:card.name,pierce:card.pierce,allin:card.allin},card);return}
+  if(card.type==='attack'&&!card.counter){const selected=card.chooseTarget?room.players.find(x=>x.id===choice.targetId&&x.alive&&x!==p):null,target=selected||nextAlive(room,p),amount=damageValue(room,p,card);addEffect(room,'attack',p,target,card,card.name);consume(p,card);addLog(room,`${p.name} ${card.name} → ${target.name}`,'hit');if(card.selfDamage)hurt(room,p,card.selfDamage,'등가교환 대가');if(p.alive)queueAttack(room,p,target,{damage:amount,name:card.name,pierce:card.pierce,allin:card.allin},card);return}
   if(card.type==='defense'||card.counter){addEffect(room,card.counter?'counter':'defense',p,null,card,'대상 없음');consume(p,card);if(card.reflect)hurt(room,p,5,'가시 방어 실패');else addLog(room,`${p.name} ${card.name} · 막을 공격 없음`);return}
   consume(p,card);utility(room,p,card)
 }
@@ -332,7 +338,7 @@ async function api(req,res,url){
     if(req.method==='POST'&&url.pathname==='/api/room/delete'){const b=await readBody(req),{room,player}=await auth(b);if(room.hostId!==player.id)throw Error('방장만 방을 삭제할 수 있습니다.');deleteRoom(room);return json(res,200,{ok:true})}
     if(req.method==='POST'&&url.pathname==='/api/state'){const b=await readBody(req),{room,player}=await auth(b);return json(res,200,view(room,player))}
     if(req.method==='POST'&&url.pathname==='/api/item/use'){const b=await readBody(req),{room,player}=await auth(b);useItem(room,player,b.uid,b.targetId);return json(res,200,{ok:true})}
-    if(req.method==='POST'&&url.pathname==='/api/select'){const b=await readBody(req),{room,player}=await auth(b);submit(room,player,b.kind,b.uid);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/select'){const b=await readBody(req),{room,player}=await auth(b);submit(room,player,b.kind,b.uid,b.targetId);return json(res,200,{ok:true})}
     if(req.method==='GET'&&url.pathname==='/api/events'){
       const room=await getRoom(url.searchParams.get('code')),id=url.searchParams.get('token'),player=room?.players.find(p=>p.id===id);if(!room||!player)return json(res,401,{error:'접속 정보가 만료되었습니다.'});
       res.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache','connection':'keep-alive','x-accel-buffering':'no'});player.connected=true;room.clients.set(id,res);sendSse(res,view(room,player));broadcast(room);
