@@ -93,6 +93,7 @@ const CARDS = {
   pierce:{name:'관통 공격',type:'attack',rarity:'rare',text:'일반 방어를 무시하는 4 피해',damage:4,pierce:true},
   guided:{name:'유도탄',type:'attack',rarity:'rare',text:'원하는 생존자에게 4 피해 · 대상 차례에 대응',damage:4,chooseTarget:true},
   doom:{name:'멸망의 노래',type:'attack',rarity:'legendary',text:'막지 못하면 3턴간 저주 · 저주 중 공격을 받으면 즉사',damage:0,doom:true},
+  roulette:{name:'러시안 룰렛',type:'attack',rarity:'legendary',text:'동전 앞면: 자신 10 고정 피해 · 뒷면: 다음 생존자 10 고정 피해',roulette:true},
   block3:{name:'적당한 방어',type:'defense',rarity:'common',text:'들어온 피해 3 감소',block:3},
   block5:{name:'괜찮은 방어',type:'defense',rarity:'common',text:'들어온 피해 5 감소',block:5},
   full:{name:'완전한 방어',type:'defense',rarity:'rare',text:'공격 피해 완전 무효',full:true},
@@ -107,7 +108,7 @@ const CARDS = {
   factory:{name:'군수공장',type:'production',rarity:'rare',text:'다음 3번의 자신의 차례마다 카드 1장'},
 };
 const POOLS = {
-  attack:{common:['weak','weak','strong','trade','counter'],rare:['allin','pierce','guided','guided'],legendary:['doom']},
+  attack:{common:['weak','weak','strong','trade','counter'],rare:['allin','pierce','guided','guided'],legendary:['doom','roulette']},
   defense:{common:['block3','block3','block5'],rare:['full','thorn'],legendary:['rainbow']},
   production:{common:['supply','heal','forge','shield','stock','recycle'],rare:['factory']}
 };
@@ -169,8 +170,7 @@ function draw(room,p,forcedType=null,starter=false){
   let rarity='common';if(!starter){const r=Math.random();rarity=r<.01?'legendary':r<.16?'rare':'common'}
   if(rarity==='legendary')type=pick(['attack','defense']);
   let pool=POOLS[type][rarity]||POOLS[type].common;
-  if(rarity==='legendary'&&type==='defense'&&p.hand.some(c=>c.id==='rainbow'))pool=POOLS[type].rare;
-  if(rarity==='legendary'&&type==='attack'&&p.hand.some(c=>c.id==='doom'))pool=POOLS[type].rare;
+  if(rarity==='legendary'){const available=pool.filter(id=>!p.hand.some(c=>c.id===id));pool=available.length?available:POOLS[type].rare}
   const c=makeCard(pick(pool));p.hand.push(c);return c;
 }
 function initialHand(room,p){for(const type of ['attack','attack','attack','attack','defense','defense','production','production'])draw(room,p,type,true);shuffle(p.hand)}
@@ -178,7 +178,7 @@ function eventCard(room){if(!room.eventDeck.length)room.eventDeck=shuffle([...EV
 function presentedAttack(room){if(!room.presentedDeck.length)room.presentedDeck=shuffle([...PRESENTED_ATTACK_POOL]);const c=makeCard(room.presentedDeck.shift());return {...c,icon:'⚔',text:`제시 공격 · ${c.text}`}}
 function nextPresentedAttack(room){if(!room.nextPresented)room.nextPresented=presentedAttack(room);return room.nextPresented}
 function heal(room,p,n){if(!p.alive)return;const was=p.hp;p.hp=Math.min(25,p.hp+n);if(p.hp>was)addLog(room,`${p.name} HP ${p.hp-was} 회복`,'good')}
-function hurt(room,p,n,source){if(!p.alive||n<=0)return;p.hp=Math.max(0,p.hp-n);addLog(room,`${p.name} ${n} 피해 · ${source}`,'hit');if(p.hp===0){p.alive=false;p.choice=null;p.buffs.doomTurns=0;p.buffs.doomFresh=false;p.buffs.doomSourceId=null;delete room.pendingAttacks[p.id];addLog(room,`${p.name} 탈락`,'death')}}
+function hurt(room,p,n,source){if(!p.alive||n<=0)return;p.hp=Math.max(0,p.hp-n);addLog(room,`${p.name} ${n} 피해 · ${source}`,'hit');if(p.hp===0){p.alive=false;p.choice=null;p.buffs.doomTurns=0;p.buffs.doomFresh=false;p.buffs.doomSourceId=null;delete room.pendingAttacks[p.id];addEffect(room,'elimination',p,p,null,`${p.name} 탈락`);addLog(room,`${p.name} 탈락`,'death')}}
 function consume(p,c){const i=p.hand.findIndex(x=>x.uid===c.uid);if(i>=0)p.discard.push(p.hand.splice(i,1)[0]);p.choiceUsed=true}
 function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarity:c.rarity,text:c.text,chooseTarget:!!c.chooseTarget}:null}
 
@@ -305,12 +305,12 @@ function queueAttack(room,attacker,target,packet,card){
 }
 function incomingAttacker(room,incoming){return incoming.attackerId==='presented'?PRESENTED_ATTACKER:room.players.find(p=>p.id===incoming.attackerId)}
 function resolveSubmittedTurn(room,p){
-  if(room.phase!=='turn'||room.currentPlayerId!==p.id||!p.choice)return;clearTimeout(room.timer);room.phase='turn_result';room.revealCurrentId=p.id;room.deadline=null;const effectsBefore=room.effects.length;
+  if(room.phase!=='turn'||room.currentPlayerId!==p.id||!p.choice)return;clearTimeout(room.timer);room.phase='turn_result';room.revealCurrentId=p.id;room.deadline=null;const effectsBefore=room.fxSeq||0;
   if(p.buffs.poison){const source=room.players.find(x=>x.id===p.buffs.poisonSourceId);p.buffs.poison=0;p.buffs.poisonSourceId=null;addEffect(room,'damage',source||p,p,null,'독화살 · 2 피해');hurt(room,p,2,'독화살');if(!p.alive){p.choice=null;if(checkWinner(room))return;const delay=1250;room.deadline=Date.now()+delay;broadcast(room);room.timer=setTimeout(()=>advanceTurn(room),delay);return}}
   let incoming=room.pendingAttacks[p.id]||null;delete room.pendingAttacks[p.id];const attacker=incoming?incomingAttacker(room,incoming):null;
   if(incoming&&(!attacker||!attacker.alive)){addLog(room,`${incoming.name} · 공격자가 탈락해 소멸`);incoming=null}
   if(incoming)resolveIncomingTurn(room,p,p.choice,incoming,attacker);else resolveFreeTurn(room,p,p.choice);
-  if(checkWinner(room))return;const added=Math.max(1,room.effects.length-effectsBefore),delay=Math.max(1250,added*720+450);room.deadline=Date.now()+delay;broadcast(room);room.timer=setTimeout(()=>advanceTurn(room),delay);
+  if(checkWinner(room))return;const freshEffects=room.effects.filter(effect=>effect.seq>effectsBefore),added=Math.max(1,freshEffects.length),hasRoulette=freshEffects.some(effect=>effect.type==='roulette'),delay=Math.max(hasRoulette?added*1100+1900:1250,added*720+450);room.deadline=Date.now()+delay;broadcast(room);room.timer=setTimeout(()=>advanceTurn(room),delay);
 }
 function resolveIncomingTurn(room,p,choice,incoming,attacker){
   const card=choice.kind==='card'?choice.card:null;if(p.buffs.weakness)p.buffs.weakness=0;if(attacker.system)addEffect(room,'attack',attacker,p,incoming.card,`제시 공격 · ${incoming.name}`);
@@ -338,6 +338,10 @@ function resolveIncomingTurn(room,p,choice,incoming,attacker){
 function resolveFreeTurn(room,p,choice){
   if(choice.kind==='draw'){draw(room,p);p.choiceUsed=true;addEffect(room,'draw',p,null,null,'카드 뽑기');addLog(room,`${p.name} 카드 1장 획득`);return}
   const card=choice.card;
+  if(card.roulette){const next=nextAlive(room,p),heads=crypto.randomInt(2)===0,victim=heads?p:next,evaded=!heads&&victim.buffs.fullEvade;consume(p,card);addEffect(room,'roulette',p,victim,card,heads?'heads':evaded?'tails_evaded':'tails');
+    if(evaded){victim.buffs.fullEvade=0;addEffect(room,'defense',victim,victim,ITEMS.evade,'완전회피');addLog(room,`${p.name} 러시안 룰렛 · 뒷면! ${victim.name}의 완전회피로 무효`,'good')}
+    else if(!heads&&victim.buffs.doomTurns>0){addLog(room,`${p.name} 러시안 룰렛 · 뒷면! ${victim.name}의 멸망의 노래 발동`,'death');addEffect(room,'doom_death',p,victim,card,'멸망의 노래 · 즉사');hurt(room,victim,Math.max(1,victim.hp),'멸망의 노래')}
+    else{addLog(room,`${p.name} 러시안 룰렛 · ${heads?'앞면! 자신':'뒷면! '+next.name}에게 10 고정 피해`,'hit');hurt(room,victim,10,`러시안 룰렛 ${heads?'앞면':'뒷면'}`)}return}
   if(card.type==='attack'&&!card.counter){const selected=card.chooseTarget?room.players.find(x=>x.id===choice.targetId&&x.alive&&x!==p):null,target=selected||nextAlive(room,p),amount=damageValue(room,p,card);addEffect(room,'attack',p,target,card,card.name);consume(p,card);addLog(room,`${p.name} ${card.name} → ${target.name}`,'hit');if(card.selfDamage)hurt(room,p,card.selfDamage,'등가교환 대가');if(p.alive)queueAttack(room,p,target,{damage:amount,name:card.name,pierce:card.pierce,allin:card.allin,doom:card.doom},card);return}
   if(card.type==='defense'||card.counter){addEffect(room,card.counter?'counter':'defense',p,null,card,'대상 없음');consume(p,card);if(card.reflect)hurt(room,p,5,'가시 방어 실패');else addLog(room,`${p.name} ${card.name} · 막을 공격 없음`);return}
   consume(p,card);utility(room,p,card)
