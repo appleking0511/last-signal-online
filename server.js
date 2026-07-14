@@ -158,7 +158,7 @@ function ordered(room){const out=[];for(let i=0;i<room.players.length;i++){const
 function nextAlive(room,p){let i=room.players.indexOf(p);do{i=(i+1)%room.players.length}while(!room.players[i].alive);return room.players[i]}
 function addLog(room,text,kind='normal'){room.logs.unshift({id:token().slice(0,8),text,kind,at:Date.now()});room.logs=room.logs.slice(0,80)}
 function addEffect(room,type,actor,target,card,text=''){
-  room.fxSeq=(room.fxSeq||0)+1;room.effects.push({seq:room.fxSeq,type,actorId:actor?.id||null,targetId:target?.id||null,card:publicCard(card),text});room.effects=room.effects.slice(-30);
+  room.fxSeq=(room.fxSeq||0)+1;room.effects.push({seq:room.fxSeq,type,actorId:actor?.id||null,targetId:target?.id||null,card:publicCard(card),text,at:Date.now()});room.effects=room.effects.slice(-30);
 }
 function draw(room,p,forcedType=null,starter=false){
   let type=forcedType||pick(DRAW_TYPE_POOL);
