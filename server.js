@@ -83,6 +83,7 @@ async function loadPersistedRoom(code){
   if(Number(room.rulesVersion||0)<6)room.rulesVersion=6;for(const p of room.players)if(p.isBot){p.ready=true;p.connected=true}
   if(Number(room.rulesVersion||0)<8){room.rulesVersion=8;for(const p of room.players){p.hand=(p.hand||[]).map(refreshCardRules);p.discard=(p.discard||[]).map(refreshCardRules);if(p.choice?.card)p.choice.card=p.hand.find(c=>c.uid===p.choice.card.uid)||refreshCardRules(p.choice.card)}for(const packet of Object.values(room.pendingAttacks||{}))if(packet?.card)packet.card=refreshCardRules(packet.card)}room.direction=room.direction===-1?-1:1;room.eliminationOrder=Array.isArray(room.eliminationOrder)?room.eliminationOrder:room.players.filter(p=>!p.alive).map(p=>p.id);room.ranking=Array.isArray(room.ranking)?room.ranking:[];if(room.status==='finished'&&!room.ranking.length)buildRanking(room);
   if(Number(room.rulesVersion||0)<9)room.rulesVersion=9;room.settings=normalizeSettings(room.settings);room.roundState=room.roundState&&typeof room.roundState==='object'?room.roundState:null;room.winners=Array.isArray(room.winners)?room.winners:room.winner?[room.winner]:[];room.endReason=room.endReason||null;
+  if(Number(room.rulesVersion||0)<10){room.rulesVersion=10;for(const p of room.players){p.hand=(p.hand||[]).map(refreshCardRules);p.discard=(p.discard||[]).map(refreshCardRules);if(p.choice?.card)p.choice.card=p.hand.find(c=>c.uid===p.choice.card.uid)||refreshCardRules(p.choice.card)}for(const packet of Object.values(room.pendingAttacks||{}))if(packet?.card)packet.card=refreshCardRules(packet.card)}
   refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);return room;
 }
 async function getRoom(code){
@@ -102,7 +103,7 @@ const CARDS = {
   pierce:{name:'관통 공격',type:'attack',rarity:'rare',text:'일반 방어를 무시하는 4 피해',damage:4,pierce:true},
   guided:{name:'유도탄',type:'attack',rarity:'rare',text:'원하는 생존자에게 4 피해 · 대상 차례에 대응',damage:4,chooseTarget:true},
   doom:{name:'멸망의 노래',type:'attack',rarity:'legendary',text:'막지 못하면 3턴간 저주 · 저주 중 공격을 받으면 즉사',damage:0,doom:true},
-  roulette:{name:'러시안 룰렛',type:'attack',rarity:'legendary',text:'동전 앞면: 자신 10 고정 피해 · 뒷면: 다음 생존자 10 고정 피해',roulette:true},
+  roulette:{name:'러시안 룰렛',type:'attack',rarity:'legendary',text:'동전 앞면: 자신 즉사 · 뒷면: 다음 생존자 즉사 · 모든 방어 무시',roulette:true},
   block3:{name:'적당한 방어',type:'defense',rarity:'common',text:'80% 확률로 들어온 피해 3 감소',block:3,defenseChance:80},
   block5:{name:'괜찮은 방어',type:'defense',rarity:'common',text:'80% 확률로 들어온 피해 5 감소',block:5,defenseChance:80},
   full:{name:'완전한 방어',type:'defense',rarity:'rare',text:'80% 확률로 공격 피해 완전 무효',full:true,defenseChance:80},
@@ -200,7 +201,7 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name){
   const code=roomCode(),host=makePlayer(name,0);
-  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:9,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,direction:1,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},eliminationOrder:[],ranking:[],deadline:null,timer:null,nextEnergy:false,winner:null,winners:[],endReason:null,settings:normalizeSettings(),roundState:null};
+  const room={code,hostId:host.id,createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:10,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,direction:1,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},eliminationOrder:[],ranking:[],deadline:null,timer:null,nextEnergy:false,winner:null,winners:[],endReason:null,settings:normalizeSettings(),roundState:null};
   rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
 async function joinRoom(code,name){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby')throw Error('이미 게임이 시작된 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
@@ -409,10 +410,7 @@ function resolveIncomingTurn(room,p,choice,incoming,attacker){
 function resolveFreeTurn(room,p,choice){
   if(choice.kind==='draw'){draw(room,p);p.choiceUsed=true;addEffect(room,'draw',p,null,null,'카드 뽑기');addLog(room,`${p.name} 카드 1장 획득`);return}
   const card=choice.card;
-  if(card.roulette){const next=nextAlive(room,p),heads=crypto.randomInt(2)===0,victim=heads?p:next,evaded=!heads&&victim.buffs.fullEvade;consume(p,card);addEffect(room,'roulette',p,victim,card,heads?'heads':evaded?'tails_evaded':'tails');
-    if(evaded){victim.buffs.fullEvade=0;addEffect(room,'defense',victim,victim,ITEMS.evade,'완전회피');addLog(room,`${p.name} 러시안 룰렛 · 뒷면! ${victim.name}의 완전회피로 무효`,'good')}
-    else if(!heads&&victim.buffs.doomTurns>0){addLog(room,`${p.name} 러시안 룰렛 · 뒷면! ${victim.name}의 멸망의 노래 발동`,'death');addEffect(room,'doom_death',p,victim,card,'멸망의 노래 · 즉사');hurt(room,victim,Math.max(1,victim.hp),'멸망의 노래')}
-    else{addLog(room,`${p.name} 러시안 룰렛 · ${heads?'앞면! 자신':'뒷면! '+next.name}에게 10 고정 피해`,'hit');hurt(room,victim,10,`러시안 룰렛 ${heads?'앞면':'뒷면'}`)}return}
+  if(card.roulette){const next=nextAlive(room,p),heads=crypto.randomInt(2)===0,victim=heads?p:next;consume(p,card);addEffect(room,'roulette',p,victim,card,heads?'heads':'tails');addLog(room,`${p.name} 러시안 룰렛 · ${heads?'앞면! 자신 즉사':'뒷면! '+next.name+' 즉사'} · 방어 불가`,'death');hurt(room,victim,Math.max(1,victim.hp),`러시안 룰렛 ${heads?'앞면':'뒷면'}`);return}
   if(card.type==='attack'&&!card.counter){const selected=card.chooseTarget?room.players.find(x=>x.id===choice.targetId&&x.alive&&x!==p):null,target=selected||nextAlive(room,p),amount=damageValue(room,p,card);addEffect(room,'attack',p,target,card,card.name);consume(p,card);addLog(room,`${p.name} ${card.name} → ${target.name}`,'hit');if(card.selfDamage)hurt(room,p,card.selfDamage,'등가교환 대가');if(p.alive)queueAttack(room,p,target,{damage:amount,name:card.name,pierce:card.pierce,allin:card.allin,doom:card.doom},card);return}
   if(card.type==='defense'||card.counter){addEffect(room,card.counter?'counter':'defense',p,null,card,'대상 없음');consume(p,card);if(card.reflect)hurt(room,p,5,'가시 방어 실패');else addLog(room,`${p.name} ${card.name} · 막을 공격 없음`);return}
   consume(p,card);utility(room,p,card)
