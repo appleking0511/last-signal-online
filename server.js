@@ -69,6 +69,18 @@ async function accountFromToken(raw,required=true){if(!raw){if(required)throw Er
 async function revokeAccountSession(raw){if(!raw)return;const hash=crypto.createHash('sha256').update(String(raw)).digest('hex');if(PERSISTENCE_ENABLED)await databaseRequest(`account_sessions?token_hash=eq.${hash}`,{method:'DELETE'});else memoryAccountSessions.delete(hash)}
 async function authenticateAccount(username,password){username=normalizeUsername(username);const account=await findAccountByUsername(username);if(!account)throw Error('아이디 또는 비밀번호가 올바르지 않습니다.');const actual=Buffer.from(passwordHash(password,account.password_salt),'hex'),expected=Buffer.from(account.password_hash,'hex');if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))throw Error('아이디 또는 비밀번호가 올바르지 않습니다.');return account}
 async function applyRankedScore(roomCode,accountId,rank,delta){const key=`${roomCode}:${accountId}`;if(PERSISTENCE_ENABLED){const rows=await databaseRequest('rpc/apply_ranked_result',{method:'POST',body:JSON.stringify({p_room_code:roomCode,p_account_id:accountId,p_placement:rank,p_delta:delta})});return Number(rows?.[0]?.new_score)||0}if(memoryRankedResults.has(key))return Number((await findAccountById(accountId))?.score)||0;memoryRankedResults.add(key);const account=await findAccountById(accountId);if(!account)return 0;account.score=(Number(account.score)||0)+delta;return account.score}
+async function getLeaderboard(viewerId=null){
+  const accounts=PERSISTENCE_ENABLED
+    ? await databaseRequest('player_accounts?select=id,display_name,score,created_at&order=score.desc,created_at.asc&limit=100')
+    : [...memoryAccountsById.values()].sort((a,b)=>(Number(b.score)||0)-(Number(a.score)||0)||String(a.id).localeCompare(String(b.id))).slice(0,100);
+  let previousScore=null,rank=0;
+  return (accounts||[]).map((entry,index)=>{
+    const score=Number(entry.score)||0;
+    if(index===0||score!==previousScore)rank=index+1;
+    previousScore=score;
+    return {rank,displayName:String(entry.display_name||'플레이어').slice(0,10),score,isMe:entry.id===viewerId};
+  });
+}
 function removePersistedRoom(code){
   return queuePersistence(code,()=>databaseRequest(`game_rooms?code=eq.${encodeURIComponent(code)}`,{method:'DELETE'}));
 }
@@ -206,7 +218,7 @@ function draw(room,p,forcedType=null,starter=false){
   if(rarity==='legendary'){const available=pool.filter(id=>!p.hand.some(c=>c.id===id));pool=available.length?available:POOLS[type].rare}
   const c=makeCard(pick(pool));p.hand.push(c);if(!starter)legendaryGain(room,p,c);return c;
 }
-function initialHand(room,p){for(const type of ['attack','attack','attack','attack','defense','defense','production','production'])draw(room,p,type,true);shuffle(p.hand)}
+function initialHand(room,p){for(const type of ['attack','attack','attack','defense','production','production'])draw(room,p,type,true);shuffle(p.hand)}
 function eventCard(room){if(!room.eventDeck.length)room.eventDeck=shuffle([...EVENTS]);return room.eventDeck.shift()}
 function presentedAttack(room){if(!room.presentedDeck.length)room.presentedDeck=shuffle([...PRESENTED_ATTACK_POOL]);const c=makeCard(room.presentedDeck.shift());return {...c,icon:'⚔',text:`제시 공격 · ${c.text}`}}
 function nextPresentedAttack(room){if(!room.nextPresented)room.nextPresented=presentedAttack(room);return room.nextPresented}
@@ -470,6 +482,7 @@ async function api(req,res,url){
     if(req.method==='POST'&&url.pathname==='/api/account/login'){const b=await readBody(req),account=await authenticateAccount(b.username,b.password),authToken=await issueAccountSession(account);return json(res,200,{authToken,account:publicAccount(account)})}
     if(req.method==='POST'&&url.pathname==='/api/account/me'){const b=await readBody(req),account=await accountFromToken(b.authToken);return json(res,200,{account:publicAccount(account)})}
     if(req.method==='POST'&&url.pathname==='/api/account/logout'){const b=await readBody(req);await revokeAccountSession(b.authToken);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/leaderboard'){const b=await readBody(req),account=await accountFromToken(b.authToken,false),rankings=await getLeaderboard(account?.id||null);return json(res,200,{rankings,updatedAt:Date.now()})}
     if(req.method==='POST'&&url.pathname==='/api/match/join'){const b=await readBody(req),account=await accountFromToken(b.authToken);return json(res,200,await joinMatchmaking(account))}
     if(req.method==='POST'&&url.pathname==='/api/match/status'){const b=await readBody(req),account=await accountFromToken(b.authToken),ticket=matchmakingTickets.get(account.id);return json(res,200,matchTicketView(ticket))}
     if(req.method==='POST'&&url.pathname==='/api/match/cancel'){const b=await readBody(req),account=await accountFromToken(b.authToken);return json(res,200,cancelMatchmaking(account))}
