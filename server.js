@@ -481,7 +481,8 @@ function buildRanking(room){const result=[],seen=new Set(),survivors=alive(room)
 function beginRankedSettlement(room){if(room.matchType!=='random'||room.ratingState==='complete'||room.ratingInFlight)return;if(!room.ranking?.length)buildRanking(room);if(!room.ratingResults?.length)room.ratingResults=room.ranking.map(row=>{const player=room.players.find(p=>p.id===row.id);return player?.accountId?{playerId:player.id,accountId:player.accountId,rank:row.rank,delta:SCORE_BY_RANK[row.rank]||0,newScore:null}:null}).filter(Boolean);room.ratingState='pending';room.ratingInFlight=true;Promise.all(room.ratingResults.map(async result=>{result.newScore=await applyRankedScore(room.code,result.accountId,result.rank,result.delta);return result})).then(()=>{room.ratingState='complete';room.ratingInFlight=false;addLog(room,'랜덤 매치 점수 반영 완료','system');broadcast(room)}).catch(error=>{room.ratingInFlight=false;console.error(`[rating] ${room.code}:`,error.message);persistRoom(room)})}
 function checkWinner(room){const survivors=alive(room);if(survivors.length>1)return false;clearTimeout(room.timer);room.status='finished';room.phase='finished';room.endReason='last_survivor';room.winner=survivors[0]?{id:survivors[0].id,name:survivors[0].name,isBot:!!survivors[0].isBot,hp:survivors[0].hp}:null;room.winners=room.winner?[room.winner]:[];room.deadline=null;buildRanking(room);beginRankedSettlement(room);addLog(room,room.winner?`${room.winner.name} 최종 승리`:'공동 탈락','system');broadcast(room);return true}
 
-function json(res,status,data){const body=JSON.stringify(data);res.writeHead(status,{'content-type':'application/json; charset=utf-8','content-length':Buffer.byteLength(body),'cache-control':'no-store'});res.end(body)}
+const CORS_HEADERS={'access-control-allow-origin':'*','access-control-allow-methods':'GET, POST, OPTIONS','access-control-allow-headers':'content-type'};
+function json(res,status,data){const body=JSON.stringify(data);res.writeHead(status,{...CORS_HEADERS,'content-type':'application/json; charset=utf-8','content-length':Buffer.byteLength(body),'cache-control':'no-store'});res.end(body)}
 function readBody(req){return new Promise((resolve,reject)=>{let data='';req.on('data',c=>{data+=c;if(data.length>1e6)req.destroy()});req.on('end',()=>{try{resolve(data?JSON.parse(data):{})}catch(e){reject(Error('잘못된 요청입니다.'))}});req.on('error',reject)})}
 async function api(req,res,url){
   try{
@@ -507,7 +508,7 @@ async function api(req,res,url){
     if(req.method==='POST'&&url.pathname==='/api/select'){const b=await readBody(req),{room,player}=await auth(b);submit(room,player,b.kind,b.uid,b.targetId);return json(res,200,{ok:true})}
     if(req.method==='GET'&&url.pathname==='/api/events'){
       const room=await getRoom(url.searchParams.get('code')),id=url.searchParams.get('token'),player=room?.players.find(p=>p.id===id);if(!room||!player)return json(res,401,{error:'접속 정보가 만료되었습니다.'});
-      res.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache','connection':'keep-alive','x-accel-buffering':'no'});player.connected=true;room.clients.set(id,res);sendSse(res,view(room,player));broadcast(room);
+      res.writeHead(200,{...CORS_HEADERS,'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache','connection':'keep-alive','x-accel-buffering':'no'});player.connected=true;room.clients.set(id,res);sendSse(res,view(room,player));broadcast(room);
       const ping=setInterval(()=>res.write(': ping\n\n'),20000);req.on('close',()=>{clearInterval(ping);room.clients.delete(id);player.connected=false;setTimeout(()=>broadcast(room),100)});return;
     }
     return json(res,404,{error:'없는 API입니다.'});
@@ -518,7 +519,7 @@ function staticFile(req,res,url){
   if(!file.startsWith(ROOT)||!fs.existsSync(file)||fs.statSync(file).isDirectory())return json(res,404,{error:'파일을 찾을 수 없습니다.'});
   const ext=path.extname(file);const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.svg':'image/svg+xml'};res.writeHead(200,{'content-type':types[ext]||'application/octet-stream','cache-control':ext==='.html'?'no-store':'public, max-age=3600'});fs.createReadStream(file).pipe(res);
 }
-const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://localhost');if(url.pathname.startsWith('/api/'))api(req,res,url);else staticFile(req,res,url)});
+const server=http.createServer((req,res)=>{if(req.method==='OPTIONS'){res.writeHead(204,CORS_HEADERS);res.end();return}const url=new URL(req.url,'http://localhost');if(url.pathname.startsWith('/api/'))api(req,res,url);else staticFile(req,res,url)});
 server.listen(PORT,'0.0.0.0',()=>{console.log(`LAST SIGNAL online server: http://localhost:${PORT}`);repairNegativeScores().catch(error=>console.error('[score repair]',error.message))});
 
 setInterval(()=>{const cutoff=Date.now()-6*60*60*1000;for(const [code,room] of rooms)if(room.updatedAt<cutoff){clearTimeout(room.timer);rooms.delete(code);removePersistedRoom(code)}},30*60*1000).unref();
