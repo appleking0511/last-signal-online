@@ -35,6 +35,14 @@ async function databaseRequest(resource,options={}){
     if(response.status===204)return null;const text=await response.text();return text?JSON.parse(text):null;
   }finally{clearTimeout(timeout)}
 }
+function safeScore(value){return Math.max(0,Math.trunc(Number(value)||0))}
+async function repairNegativeScores(){
+  if(PERSISTENCE_ENABLED){
+    await databaseRequest('player_accounts?score=lt.0',{method:'PATCH',body:JSON.stringify({score:0,updated_at:new Date().toISOString()})});
+    return;
+  }
+  for(const account of memoryAccountsById.values())account.score=safeScore(account.score);
+}
 function serializableRoom(room){
   const {clients,timer,...state}=room;
   return {...state,players:state.players.map(p=>({...p,connected:false}))};
@@ -60,7 +68,7 @@ function persistRoom(room){
 function normalizeUsername(value){return String(value||'').trim().toLowerCase()}
 function validateCredentials(username,password){if(!/^[a-z0-9가-힣_]{3,16}$/u.test(username))throw Error('아이디는 한글, 영문, 숫자, 밑줄로 3~16자까지 사용할 수 있습니다.');if(String(password||'').length<8||String(password||'').length>72)throw Error('비밀번호는 8~72자로 입력하세요.')}
 function passwordHash(password,salt){return crypto.scryptSync(String(password),salt,64).toString('hex')}
-function publicAccount(account){return account?{id:account.id,username:account.username,displayName:account.display_name,score:Number(account.score)||0}:null}
+function publicAccount(account){return account?{id:account.id,username:account.username,displayName:account.display_name,score:safeScore(account.score)}:null}
 async function findAccountByUsername(username){if(!PERSISTENCE_ENABLED)return memoryAccountsByName.get(username)||null;const rows=await databaseRequest(`player_accounts?username=eq.${encodeURIComponent(username)}&select=id,username,display_name,password_salt,password_hash,score&limit=1`);return rows?.[0]||null}
 async function findAccountById(id){if(!PERSISTENCE_ENABLED)return memoryAccountsById.get(id)||null;const rows=await databaseRequest(`player_accounts?id=eq.${encodeURIComponent(id)}&select=id,username,display_name,password_salt,password_hash,score&limit=1`);return rows?.[0]||null}
 async function createAccount(username,password,displayName){username=normalizeUsername(username);validateCredentials(username,password);displayName=String(displayName||username).trim().slice(0,10);if(!displayName)throw Error('닉네임을 입력하세요.');if(await findAccountByUsername(username))throw Error('이미 사용 중인 아이디입니다.');const salt=crypto.randomBytes(16).toString('hex'),account={id:crypto.randomUUID(),username,display_name:displayName,password_salt:salt,password_hash:passwordHash(password,salt),score:0};if(PERSISTENCE_ENABLED){const rows=await databaseRequest('player_accounts',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(account)});return rows[0]}memoryAccountsById.set(account.id,account);memoryAccountsByName.set(username,account);return account}
@@ -68,14 +76,14 @@ async function issueAccountSession(account){const raw=token()+token(),hash=crypt
 async function accountFromToken(raw,required=true){if(!raw){if(required)throw Error('로그인이 필요합니다.');return null}const hash=crypto.createHash('sha256').update(String(raw)).digest('hex');let account=null;if(PERSISTENCE_ENABLED){const rows=await databaseRequest(`account_sessions?token_hash=eq.${hash}&expires_at=gt.${encodeURIComponent(new Date().toISOString())}&select=account_id&limit=1`);if(rows?.[0])account=await findAccountById(rows[0].account_id)}else{const session=memoryAccountSessions.get(hash);if(session&&session.expiresAt>Date.now())account=await findAccountById(session.accountId)}if(!account&&required)throw Error('로그인이 만료되었습니다. 다시 로그인하세요.');return account}
 async function revokeAccountSession(raw){if(!raw)return;const hash=crypto.createHash('sha256').update(String(raw)).digest('hex');if(PERSISTENCE_ENABLED)await databaseRequest(`account_sessions?token_hash=eq.${hash}`,{method:'DELETE'});else memoryAccountSessions.delete(hash)}
 async function authenticateAccount(username,password){username=normalizeUsername(username);const account=await findAccountByUsername(username);if(!account)throw Error('아이디 또는 비밀번호가 올바르지 않습니다.');const actual=Buffer.from(passwordHash(password,account.password_salt),'hex'),expected=Buffer.from(account.password_hash,'hex');if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))throw Error('아이디 또는 비밀번호가 올바르지 않습니다.');return account}
-async function applyRankedScore(roomCode,accountId,rank,delta){const key=`${roomCode}:${accountId}`;if(PERSISTENCE_ENABLED){const rows=await databaseRequest('rpc/apply_ranked_result',{method:'POST',body:JSON.stringify({p_room_code:roomCode,p_account_id:accountId,p_placement:rank,p_delta:delta})});return Number(rows?.[0]?.new_score)||0}if(memoryRankedResults.has(key))return Number((await findAccountById(accountId))?.score)||0;memoryRankedResults.add(key);const account=await findAccountById(accountId);if(!account)return 0;account.score=(Number(account.score)||0)+delta;return account.score}
+async function applyRankedScore(roomCode,accountId,rank,delta){const key=`${roomCode}:${accountId}`;if(PERSISTENCE_ENABLED){const rows=await databaseRequest('rpc/apply_ranked_result',{method:'POST',body:JSON.stringify({p_room_code:roomCode,p_account_id:accountId,p_placement:rank,p_delta:delta})});const score=safeScore(rows?.[0]?.new_score);if(Number(rows?.[0]?.new_score)<0)await databaseRequest(`player_accounts?id=eq.${encodeURIComponent(accountId)}`,{method:'PATCH',body:JSON.stringify({score:0,updated_at:new Date().toISOString()})});return score}if(memoryRankedResults.has(key))return safeScore((await findAccountById(accountId))?.score);memoryRankedResults.add(key);const account=await findAccountById(accountId);if(!account)return 0;account.score=safeScore(safeScore(account.score)+delta);return account.score}
 async function getLeaderboard(viewerId=null){
   const accounts=PERSISTENCE_ENABLED
     ? await databaseRequest('player_accounts?select=id,display_name,score,created_at&order=score.desc,created_at.asc&limit=100')
     : [...memoryAccountsById.values()].sort((a,b)=>(Number(b.score)||0)-(Number(a.score)||0)||String(a.id).localeCompare(String(b.id))).slice(0,100);
   let previousScore=null,rank=0;
   return (accounts||[]).map((entry,index)=>{
-    const score=Number(entry.score)||0;
+    const score=safeScore(entry.score);
     if(index===0||score!==previousScore)rank=index+1;
     previousScore=score;
     return {rank,displayName:String(entry.display_name||'플레이어').slice(0,10),score,isMe:entry.id===viewerId};
@@ -237,7 +245,7 @@ function removeFromMatchQueue(accountId){for(let i=matchmakingQueue.length-1;i>=
 function matchTicketView(ticket){if(!ticket)return {state:'idle'};const elapsed=Math.max(0,Date.now()-ticket.joinedAt);return {state:ticket.state,joinedAt:ticket.joinedAt,elapsedSeconds:Math.floor(elapsed/1000),aiAllowed:ticket.state==='queued'&&elapsed>=MATCH_AI_WAIT_MS,waitingCount:matchmakingQueue.length,match:ticket.match||null}}
 function createRandomMatch(entries){const first=entries[0],created=createRoom(first.account.display_name,first.account,'random'),room=created.room,sessions=new Map([[first.account.id,{code:room.code,token:created.player.id}]]);for(const entry of entries.slice(1)){const player=makePlayer(entry.account.display_name,room.players.length,false,entry.account.id);room.players.push(player);sessions.set(entry.account.id,{code:room.code,token:player.id})}while(room.players.length<MATCH_SIZE){const bot=makePlayer(`AI ${room.players.filter(p=>p.isBot).length+1}`,room.players.length,true);room.players.push(bot)}room.players.forEach(p=>p.ready=true);room.hostId=null;room.settings=normalizeSettings();startGame(room);for(const entry of entries){const ticket=matchmakingTickets.get(entry.account.id);if(ticket){ticket.state='matched';ticket.match=sessions.get(entry.account.id);ticket.matchedAt=Date.now()}}return room}
 async function tryFullRandomMatch(){while(matchmakingQueue.length>=MATCH_SIZE){const ids=matchmakingQueue.splice(0,MATCH_SIZE),entries=ids.map(id=>matchmakingTickets.get(id)).filter(x=>x?.state==='queued');if(entries.length===MATCH_SIZE)createRandomMatch(entries);else for(const entry of entries)matchmakingQueue.unshift(entry.account.id)}}
-async function joinMatchmaking(account){let ticket=matchmakingTickets.get(account.id);if(ticket?.state==='matched'){const room=await getRoom(ticket.match?.code);if(room&&room.status!=='finished'&&room.status!=='deleted')return matchTicketView(ticket);matchmakingTickets.delete(account.id);ticket=null}if(ticket?.state==='queued')return matchTicketView(ticket);ticket={account,state:'queued',joinedAt:Date.now(),match:null};matchmakingTickets.set(account.id,ticket);matchmakingQueue.push(account.id);await tryFullRandomMatch();return matchTicketView(ticket)}
+async function joinMatchmaking(account){let ticket=matchmakingTickets.get(account.id);if(ticket?.state==='matched'){const room=await getRoom(ticket.match?.code),player=room?.players.find(p=>p.accountId===account.id);if(room&&room.status!=='finished'&&room.status!=='deleted'&&player?.alive)return matchTicketView(ticket);matchmakingTickets.delete(account.id);ticket=null}if(ticket?.state==='queued')return matchTicketView(ticket);ticket={account,state:'queued',joinedAt:Date.now(),match:null};matchmakingTickets.set(account.id,ticket);matchmakingQueue.push(account.id);await tryFullRandomMatch();return matchTicketView(ticket)}
 function cancelMatchmaking(account){const ticket=matchmakingTickets.get(account.id);if(ticket?.state==='queued'){removeFromMatchQueue(account.id);matchmakingTickets.delete(account.id)}return {state:'idle'}}
 function fillRandomMatchWithAi(account){const requester=matchmakingTickets.get(account.id);if(!requester||requester.state!=='queued')throw Error('랜덤 매칭 대기 중이 아닙니다.');if(Date.now()-requester.joinedAt<MATCH_AI_WAIT_MS)throw Error('AI 초대는 60초 동안 기다린 뒤 사용할 수 있습니다.');const ids=[account.id,...matchmakingQueue.filter(id=>id!==account.id)].slice(0,MATCH_SIZE);const entries=ids.map(id=>matchmakingTickets.get(id)).filter(x=>x?.state==='queued');for(const entry of entries)removeFromMatchQueue(entry.account.id);createRandomMatch(entries);return matchTicketView(requester)}
 function setBotCount(room,host,count){
@@ -266,7 +274,7 @@ function view(room,me){
   };
 }
 function sendSse(res,data){res.write(`data: ${JSON.stringify(data)}\n\n`)}
-function broadcast(room){room.updatedAt=Date.now();for(const [playerId,res] of room.clients){const p=room.players.find(x=>x.id===playerId);if(p)sendSse(res,view(room,p))}persistRoom(room)}
+function broadcast(room){if(room.status==='playing'&&alive(room).length<=1){checkWinner(room);return}room.updatedAt=Date.now();for(const [playerId,res] of room.clients){const p=room.players.find(x=>x.id===playerId);if(p)sendSse(res,view(room,p))}persistRoom(room)}
 
 function deleteRoom(room){
   clearTimeout(room.timer);room.status='deleted';room.phase='deleted';room.deadline=null;
@@ -511,6 +519,6 @@ function staticFile(req,res,url){
   const ext=path.extname(file);const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.svg':'image/svg+xml'};res.writeHead(200,{'content-type':types[ext]||'application/octet-stream','cache-control':ext==='.html'?'no-store':'public, max-age=3600'});fs.createReadStream(file).pipe(res);
 }
 const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://localhost');if(url.pathname.startsWith('/api/'))api(req,res,url);else staticFile(req,res,url)});
-server.listen(PORT,'0.0.0.0',()=>console.log(`LAST SIGNAL online server: http://localhost:${PORT}`));
+server.listen(PORT,'0.0.0.0',()=>{console.log(`LAST SIGNAL online server: http://localhost:${PORT}`);repairNegativeScores().catch(error=>console.error('[score repair]',error.message))});
 
 setInterval(()=>{const cutoff=Date.now()-6*60*60*1000;for(const [code,room] of rooms)if(room.updatedAt<cutoff){clearTimeout(room.timer);rooms.delete(code);removePersistedRoom(code)}},30*60*1000).unref();

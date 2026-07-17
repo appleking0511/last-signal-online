@@ -17,6 +17,17 @@ create table if not exists public.player_accounts (
   updated_at timestamptz not null default now()
 );
 
+-- 기존 음수 점수를 복구하고 앞으로도 0점 아래로 내려가지 않게 합니다.
+update public.player_accounts
+set score = 0, updated_at = now()
+where score < 0;
+
+alter table public.player_accounts
+drop constraint if exists player_accounts_score_nonnegative;
+
+alter table public.player_accounts
+add constraint player_accounts_score_nonnegative check (score >= 0);
+
 create table if not exists public.account_sessions (
   token_hash text primary key,
   account_id uuid not null references public.player_accounts(id) on delete cascade,
@@ -55,7 +66,7 @@ begin
   get diagnostics inserted_count = row_count;
   if inserted_count = 1 then
     update public.player_accounts
-      set score = score + p_delta, updated_at = now()
+      set score = greatest(0, score + p_delta), updated_at = now()
       where id = p_account_id
       returning score into new_score;
     applied := true;
