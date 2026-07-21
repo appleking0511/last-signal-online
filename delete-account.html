@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LAST SIGNAL 계정 삭제</title>
+  <meta name="description" content="LAST SIGNAL 계정 및 관련 데이터 삭제">
+  <style>
+    :root{color-scheme:dark;--bg:#060b14;--panel:#101a2b;--line:#263751;--text:#edf5ff;--muted:#9cacbf;--cyan:#55ddff;--red:#ff6070}*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:20px;background:radial-gradient(circle at 50% 0,#253042,#060b14 52%);color:var(--text);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif}.card{width:min(520px,100%);padding:34px;border:1px solid var(--line);border-radius:22px;background:#101a2bf5;box-shadow:0 25px 80px #000a}.brand{color:var(--cyan);font-size:11px;font-weight:900;letter-spacing:.18em}h1{margin:8px 0 10px}p{color:var(--muted);font-size:13px;line-height:1.7}.warning{padding:14px;border:1px solid #ff607055;border-radius:10px;background:#ff60700c;color:#ffb4bd}label{display:block;margin:17px 0 7px;color:#b8c5d7;font-size:11px;font-weight:800}input{width:100%;padding:13px;border:1px solid var(--line);border-radius:10px;background:#080f1c;color:var(--text);outline:none}input:focus{border-color:var(--cyan)}.confirm{display:flex;align-items:flex-start;gap:9px;margin-top:18px;color:var(--muted);font-size:12px}.confirm input{width:auto;margin-top:3px}.actions{display:flex;gap:9px;margin-top:20px}button,a.button{flex:1;padding:12px;border:1px solid var(--line);border-radius:10px;background:#121f34;color:var(--text);font:inherit;font-size:12px;font-weight:900;text-align:center;text-decoration:none}button{border-color:#ff607077;background:#ff60701b;color:#ffb0ba}button:disabled{opacity:.4}.status{min-height:24px;margin-top:13px;color:#ff9ca7;font-size:12px}.status.success{color:#8df0bf}@media(max-width:500px){.card{padding:26px 20px}.actions{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <main class="card"><div class="brand">LAST SIGNAL · ACCOUNT</div><h1>계정 삭제</h1><p class="warning">계정을 삭제하면 아이디, 닉네임, 점수, 로그인 세션 및 계정과 연결된 랜덤 매치 결과가 영구적으로 삭제되며 복구할 수 없습니다.</p><form id="deleteForm"><label for="username">아이디</label><input id="username" maxlength="16" autocomplete="username" required><label for="password">비밀번호</label><input id="password" type="password" maxlength="72" autocomplete="current-password" required><label class="confirm"><input id="confirm" type="checkbox"> 위 내용을 확인했으며 계정과 관련 데이터를 영구 삭제하는 데 동의합니다.</label><div class="actions"><a class="button" href="/privacy.html">개인정보처리방침</a><button id="deleteButton" type="submit" disabled>영구 삭제</button></div><div class="status" id="status" role="status"></div></form></main>
+  <script>
+    const form=document.querySelector('#deleteForm'),button=document.querySelector('#deleteButton'),confirmBox=document.querySelector('#confirm'),statusBox=document.querySelector('#status');
+    confirmBox.addEventListener('change',()=>button.disabled=!confirmBox.checked);
+    form.addEventListener('submit',async event=>{event.preventDefault();if(!confirmBox.checked)return;button.disabled=true;statusBox.className='status';statusBox.textContent='계정을 확인하고 있습니다…';try{const response=await fetch('/api/account/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:document.querySelector('#username').value.trim(),password:document.querySelector('#password').value})}),data=await response.json();if(!response.ok)throw Error(data.error||'계정을 삭제하지 못했습니다.');form.reset();statusBox.className='status success';statusBox.textContent='계정과 관련 데이터가 삭제되었습니다. 이 창을 닫아도 됩니다.'}catch(error){statusBox.textContent=error.message;button.disabled=!confirmBox.checked}});
+  </script>
+</body>
+</html>

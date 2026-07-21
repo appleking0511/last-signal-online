@@ -76,6 +76,36 @@ async function issueAccountSession(account){const raw=token()+token(),hash=crypt
 async function accountFromToken(raw,required=true){if(!raw){if(required)throw Error('로그인이 필요합니다.');return null}const hash=crypto.createHash('sha256').update(String(raw)).digest('hex');let account=null;if(PERSISTENCE_ENABLED){const rows=await databaseRequest(`account_sessions?token_hash=eq.${hash}&expires_at=gt.${encodeURIComponent(new Date().toISOString())}&select=account_id&limit=1`);if(rows?.[0])account=await findAccountById(rows[0].account_id)}else{const session=memoryAccountSessions.get(hash);if(session&&session.expiresAt>Date.now())account=await findAccountById(session.accountId)}if(!account&&required)throw Error('로그인이 만료되었습니다. 다시 로그인하세요.');return account}
 async function revokeAccountSession(raw){if(!raw)return;const hash=crypto.createHash('sha256').update(String(raw)).digest('hex');if(PERSISTENCE_ENABLED)await databaseRequest(`account_sessions?token_hash=eq.${hash}`,{method:'DELETE'});else memoryAccountSessions.delete(hash)}
 async function authenticateAccount(username,password){username=normalizeUsername(username);const account=await findAccountByUsername(username);if(!account)throw Error('아이디 또는 비밀번호가 올바르지 않습니다.');const actual=Buffer.from(passwordHash(password,account.password_salt),'hex'),expected=Buffer.from(account.password_hash,'hex');if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))throw Error('아이디 또는 비밀번호가 올바르지 않습니다.');return account}
+async function deleteAccount({authToken,username,password}){
+  const account=authToken?await accountFromToken(authToken):await authenticateAccount(username,password);
+  if(authToken){const verified=await authenticateAccount(account.username,password);if(verified.id!==account.id)throw Error('비밀번호가 올바르지 않습니다.')}
+  removeFromMatchQueue(account.id);matchmakingTickets.delete(account.id);
+  const updates=[];
+  for(const room of rooms.values()){
+    let changed=false;
+    for(const player of room.players||[])if(player.accountId===account.id){player.accountId=null;changed=true}
+    if(changed)updates.push(persistRoom(room));
+  }
+  if(PERSISTENCE_ENABLED){
+    const rows=await databaseRequest('game_rooms?select=code,state');
+    for(const row of rows||[]){
+      const state=row.state;if(!state?.players?.some(player=>player.accountId===account.id))continue;
+      state.players.forEach(player=>{if(player.accountId===account.id)player.accountId=null});
+      updates.push(databaseRequest(`game_rooms?code=eq.${encodeURIComponent(row.code)}`,{method:'PATCH',body:JSON.stringify({state,updated_at:new Date().toISOString()})}));
+    }
+    await Promise.all(updates);await databaseRequest(`player_accounts?id=eq.${encodeURIComponent(account.id)}`,{method:'DELETE'});
+  }else{
+    for(const [hash,session] of memoryAccountSessions)if(session.accountId===account.id)memoryAccountSessions.delete(hash);
+    for(const key of memoryRankedResults)if(key.endsWith(`:${account.id}`))memoryRankedResults.delete(key);
+    memoryAccountsById.delete(account.id);memoryAccountsByName.delete(account.username);
+  }
+  return {ok:true};
+}
+async function cleanupExpiredData(){
+  const now=Date.now(),roomCutoff=new Date(now-6*60*60*1000).toISOString(),sessionCutoff=new Date(now).toISOString();
+  if(PERSISTENCE_ENABLED){await databaseRequest(`account_sessions?expires_at=lt.${encodeURIComponent(sessionCutoff)}`,{method:'DELETE'});await databaseRequest(`game_rooms?updated_at=lt.${encodeURIComponent(roomCutoff)}`,{method:'DELETE'});return}
+  for(const [hash,session] of memoryAccountSessions)if(session.expiresAt<=now)memoryAccountSessions.delete(hash);
+}
 async function applyRankedScore(roomCode,accountId,rank,delta){const key=`${roomCode}:${accountId}`;if(PERSISTENCE_ENABLED){const rows=await databaseRequest('rpc/apply_ranked_result',{method:'POST',body:JSON.stringify({p_room_code:roomCode,p_account_id:accountId,p_placement:rank,p_delta:delta})});const score=safeScore(rows?.[0]?.new_score);if(Number(rows?.[0]?.new_score)<0)await databaseRequest(`player_accounts?id=eq.${encodeURIComponent(accountId)}`,{method:'PATCH',body:JSON.stringify({score:0,updated_at:new Date().toISOString()})});return score}if(memoryRankedResults.has(key))return safeScore((await findAccountById(accountId))?.score);memoryRankedResults.add(key);const account=await findAccountById(accountId);if(!account)return 0;account.score=safeScore(safeScore(account.score)+delta);return account.score}
 async function getLeaderboard(viewerId=null){
   const accounts=PERSISTENCE_ENABLED
@@ -491,6 +521,7 @@ async function api(req,res,url){
     if(req.method==='POST'&&url.pathname==='/api/account/login'){const b=await readBody(req),account=await authenticateAccount(b.username,b.password),authToken=await issueAccountSession(account);return json(res,200,{authToken,account:publicAccount(account)})}
     if(req.method==='POST'&&url.pathname==='/api/account/me'){const b=await readBody(req),account=await accountFromToken(b.authToken);return json(res,200,{account:publicAccount(account)})}
     if(req.method==='POST'&&url.pathname==='/api/account/logout'){const b=await readBody(req);await revokeAccountSession(b.authToken);return json(res,200,{ok:true})}
+    if(req.method==='POST'&&url.pathname==='/api/account/delete'){const b=await readBody(req);return json(res,200,await deleteAccount(b))}
     if(req.method==='POST'&&url.pathname==='/api/leaderboard'){const b=await readBody(req),account=await accountFromToken(b.authToken,false),rankings=await getLeaderboard(account?.id||null);return json(res,200,{rankings,updatedAt:Date.now()})}
     if(req.method==='POST'&&url.pathname==='/api/match/join'){const b=await readBody(req),account=await accountFromToken(b.authToken);return json(res,200,await joinMatchmaking(account))}
     if(req.method==='POST'&&url.pathname==='/api/match/status'){const b=await readBody(req),account=await accountFromToken(b.authToken),ticket=matchmakingTickets.get(account.id);return json(res,200,matchTicketView(ticket))}
@@ -520,6 +551,7 @@ function staticFile(req,res,url){
   const ext=path.extname(file);const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.svg':'image/svg+xml'};res.writeHead(200,{'content-type':types[ext]||'application/octet-stream','cache-control':ext==='.html'?'no-store':'public, max-age=3600'});fs.createReadStream(file).pipe(res);
 }
 const server=http.createServer((req,res)=>{if(req.method==='OPTIONS'){res.writeHead(204,CORS_HEADERS);res.end();return}const url=new URL(req.url,'http://localhost');if(url.pathname.startsWith('/api/'))api(req,res,url);else staticFile(req,res,url)});
-server.listen(PORT,'0.0.0.0',()=>{console.log(`LAST SIGNAL online server: http://localhost:${PORT}`);repairNegativeScores().catch(error=>console.error('[score repair]',error.message))});
+server.listen(PORT,'0.0.0.0',()=>{console.log(`LAST SIGNAL online server: http://localhost:${PORT}`);repairNegativeScores().catch(error=>console.error('[score repair]',error.message));cleanupExpiredData().catch(error=>console.error('[data cleanup]',error.message))});
 
 setInterval(()=>{const cutoff=Date.now()-6*60*60*1000;for(const [code,room] of rooms)if(room.updatedAt<cutoff){clearTimeout(room.timer);rooms.delete(code);removePersistedRoom(code)}},30*60*1000).unref();
+setInterval(()=>cleanupExpiredData().catch(error=>console.error('[data cleanup]',error.message)),30*60*1000).unref();

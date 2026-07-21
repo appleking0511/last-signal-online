@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LAST SIGNAL 개인정보처리방침</title>
+  <meta name="description" content="LAST SIGNAL 개인정보처리방침">
+  <style>
+    :root{color-scheme:dark;--bg:#060b14;--panel:#101a2b;--line:#263751;--text:#edf5ff;--muted:#9cacbf;--cyan:#55ddff;--red:#ff6070}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -10%,#17314a,#060b14 45%);color:var(--text);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;line-height:1.75}main{width:min(880px,calc(100% - 32px));margin:48px auto;padding:42px;border:1px solid var(--line);border-radius:24px;background:#101a2bf2;box-shadow:0 24px 80px #0009}header{padding-bottom:26px;border-bottom:1px solid var(--line)}.brand{color:var(--cyan);font-size:12px;font-weight:900;letter-spacing:.18em}h1{margin:8px 0 3px;font-size:clamp(28px,5vw,43px)}h2{margin:34px 0 9px;font-size:19px}p,li{color:var(--muted);font-size:14px}strong{color:var(--text)}a{color:var(--cyan)}.summary{margin:24px 0;padding:18px;border-left:3px solid var(--cyan);border-radius:8px;background:#55ddff0d}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:32px}.button{display:inline-flex;padding:11px 16px;border:1px solid var(--line);border-radius:10px;color:var(--text);font-size:13px;font-weight:800;text-decoration:none}.button.primary{border-color:#55ddff88;background:#55ddff17;color:#baf4ff}.button.danger{border-color:#ff607077;background:#ff607010;color:#ffadb6}footer{margin-top:38px;padding-top:20px;border-top:1px solid var(--line);color:#75869d;font-size:12px}@media(max-width:600px){main{margin:16px auto;padding:25px 20px;border-radius:18px}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div class="brand">LAST SIGNAL · VERSION 2.9.0</div><h1>개인정보처리방침</h1><p>시행일: 2026년 7월 21일</p></header>
+  <div class="summary">LAST SIGNAL 개발자 김경헌(이하 “개발자”)은 이용자의 개인정보를 필요한 범위에서만 처리하며, 게임 운영 이외의 목적으로 판매하지 않습니다.</div>
+
+  <h2>1. 처리하는 정보</h2>
+  <ul>
+    <li><strong>회원 정보:</strong> 아이디, 게임 닉네임, 비밀번호의 단방향 암호화 값과 암호화용 임의 값</li>
+    <li><strong>게임 정보:</strong> 점수, 랜덤 매치 순위 및 점수 변동, 방 코드와 진행 상태</li>
+    <li><strong>접속 정보:</strong> 로그인 세션 식별값과 만료 시각</li>
+    <li><strong>서비스 운영 정보:</strong> 호스팅 사업자가 서비스 제공과 보안을 위해 일시적으로 처리할 수 있는 IP 주소, 기기·브라우저 정보 및 접속 기록</li>
+  </ul>
+  <p>비밀번호 원문은 저장하지 않습니다. 게스트 이용자는 회원 계정 정보 없이 닉네임과 현재 게임 진행 정보만 처리됩니다.</p>
+
+  <h2>2. 이용 목적</h2>
+  <ul><li>회원가입, 로그인 및 계정 식별</li><li>온라인 방 연결과 실시간 게임 진행</li><li>랜덤 매치 점수 계산 및 랭킹 제공</li><li>부정 이용 방지, 장애 확인 및 서비스 보안</li></ul>
+
+  <h2>3. 보관 기간과 삭제</h2>
+  <ul>
+    <li>회원 정보와 점수·매치 결과는 계정 삭제 전까지 보관합니다.</li>
+    <li>로그인 세션은 발급 후 최대 30일 동안 유효하며, 만료된 세션 정보는 정기적으로 삭제합니다.</li>
+    <li>완료되거나 사용되지 않는 게임 방 정보는 마지막 갱신 후 약 6시간이 지나면 정리합니다.</li>
+    <li>계정을 삭제하면 해당 계정, 로그인 세션, 점수 및 계정과 연결된 랜덤 매치 결과를 삭제합니다. 법령상 보관 의무가 있는 경우에는 해당 기간 동안 별도로 보관할 수 있습니다.</li>
+  </ul>
+
+  <h2>4. 처리 위탁 및 국외 처리</h2>
+  <p>서비스 제공을 위해 다음 사업자의 시스템을 사용합니다. 이 과정에서 정보가 대한민국 외 지역의 서버에서 처리될 수 있습니다.</p>
+  <ul><li><strong>Render:</strong> 웹·게임 서버 호스팅과 네트워크 제공</li><li><strong>Supabase:</strong> 계정, 세션, 점수, 매치 결과 및 게임 상태 데이터베이스 보관</li></ul>
+  <p>개발자는 개인정보를 광고 목적으로 판매하거나 제3자에게 임의로 제공하지 않습니다. 다만 법령에 따른 적법한 요청이 있는 경우에는 예외로 합니다.</p>
+
+  <h2>5. 보호 조치</h2>
+  <p>통신 구간에 HTTPS를 사용하고, 데이터베이스 비밀 키는 서버에서만 관리합니다. 비밀번호는 단방향 암호화하여 원문을 확인할 수 없도록 처리하며, 계정 데이터 접근 범위를 제한합니다.</p>
+
+  <h2>6. 이용자의 권리와 계정 삭제</h2>
+  <p>이용자는 게임 로비의 <strong>계정 관리 → 계정 삭제</strong>에서 직접 삭제할 수 있습니다. 앱을 설치하지 않은 경우 아래 외부 계정 삭제 페이지를 이용할 수 있습니다. 삭제는 되돌릴 수 없으며 점수와 기록도 함께 사라집니다.</p>
+  <div class="actions"><a class="button danger" href="/delete-account.html">계정 삭제 페이지</a><a class="button" href="/">LAST SIGNAL로 돌아가기</a></div>
+
+  <h2>7. 아동의 개인정보</h2>
+  <p>LAST SIGNAL은 만 13세 미만 아동을 대상으로 설계되지 않았습니다. 만 13세 미만 이용자의 정보가 보호자 동의 없이 처리된 사실을 알게 되면 아래 연락처를 통해 삭제를 요청할 수 있습니다.</p>
+
+  <h2>8. 방침 변경</h2>
+  <p>서비스 또는 법령 변경에 따라 본 방침이 바뀌는 경우 이 페이지에 시행일과 변경 내용을 표시합니다.</p>
+
+  <h2>9. 문의</h2>
+  <p>개발자: 김경헌<br>서비스: LAST SIGNAL<br>이메일: <a href="mailto:appleking0511@gmail.com">appleking0511@gmail.com</a></p>
+  <footer>최종 수정: 2026년 7월 21일 · LAST SIGNAL</footer>
+</main>
+</body>
+</html>
