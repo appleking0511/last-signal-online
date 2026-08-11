@@ -13,11 +13,15 @@ create table if not exists public.player_accounts (
   password_salt text not null,
   password_hash text not null,
   score integer not null default 0,
+  signal_points integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
--- 기존 음수 점수를 복구하고 앞으로도 0점 아래로 내려가지 않게 합니다.
+-- score는 랭크 점수(RP)로 사용합니다. 기존 점수는 그대로 RP로 전환됩니다.
+alter table public.player_accounts add column if not exists signal_points integer not null default 0;
+
+-- 기존 음수 RP·재화를 복구하고 앞으로도 0 아래로 내려가지 않게 합니다.
 update public.player_accounts
 set score = 0, updated_at = now()
 where score < 0;
@@ -27,6 +31,10 @@ drop constraint if exists player_accounts_score_nonnegative;
 
 alter table public.player_accounts
 add constraint player_accounts_score_nonnegative check (score >= 0);
+
+update public.player_accounts set signal_points = 0, updated_at = now() where signal_points < 0;
+alter table public.player_accounts drop constraint if exists player_accounts_signal_points_nonnegative;
+alter table public.player_accounts add constraint player_accounts_signal_points_nonnegative check (signal_points >= 0);
 
 create table if not exists public.account_sessions (
   token_hash text primary key,
@@ -41,17 +49,22 @@ create table if not exists public.ranked_match_results (
   account_id uuid not null references public.player_accounts(id) on delete cascade,
   placement smallint not null check (placement between 1 and 4),
   score_delta integer not null,
+  points_reward integer not null default 0,
   created_at timestamptz not null default now(),
   unique(room_code, account_id)
 );
 
+alter table public.ranked_match_results add column if not exists points_reward integer not null default 0;
+
+drop function if exists public.apply_ranked_result(text, uuid, integer, integer);
 create or replace function public.apply_ranked_result(
   p_room_code text,
   p_account_id uuid,
   p_placement integer,
-  p_delta integer
+  p_delta integer,
+  p_points integer
 )
-returns table(new_score integer, applied boolean)
+returns table(new_score integer, new_points integer, applied boolean)
 language plpgsql
 security definer
 set search_path = public
@@ -59,19 +72,19 @@ as $$
 declare
   inserted_count integer;
 begin
-  insert into public.ranked_match_results(room_code, account_id, placement, score_delta)
-  values (p_room_code, p_account_id, p_placement, p_delta)
+  insert into public.ranked_match_results(room_code, account_id, placement, score_delta, points_reward)
+  values (p_room_code, p_account_id, p_placement, p_delta, greatest(0, p_points))
   on conflict (room_code, account_id) do nothing;
 
   get diagnostics inserted_count = row_count;
   if inserted_count = 1 then
     update public.player_accounts
-      set score = greatest(0, score + p_delta), updated_at = now()
+      set score = greatest(0, score + p_delta), signal_points = signal_points + greatest(0, p_points), updated_at = now()
       where id = p_account_id
-      returning score into new_score;
+      returning score, signal_points into new_score, new_points;
     applied := true;
   else
-    select score into new_score from public.player_accounts where id = p_account_id;
+    select score, signal_points into new_score, new_points from public.player_accounts where id = p_account_id;
     applied := false;
   end if;
   return next;
@@ -85,8 +98,8 @@ alter table public.ranked_match_results enable row level security;
 
 revoke all on table public.game_rooms, public.player_accounts, public.account_sessions, public.ranked_match_results from anon, authenticated;
 grant select, insert, update, delete on table public.game_rooms, public.player_accounts, public.account_sessions, public.ranked_match_results to service_role;
-revoke all on function public.apply_ranked_result(text, uuid, integer, integer) from public, anon, authenticated;
-grant execute on function public.apply_ranked_result(text, uuid, integer, integer) to service_role;
+revoke all on function public.apply_ranked_result(text, uuid, integer, integer, integer) from public, anon, authenticated;
+grant execute on function public.apply_ranked_result(text, uuid, integer, integer, integer) to service_role;
 
 create index if not exists game_rooms_updated_at_idx on public.game_rooms (updated_at);
 create index if not exists account_sessions_account_idx on public.account_sessions (account_id);
