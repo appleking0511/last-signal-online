@@ -14,12 +14,14 @@ create table if not exists public.player_accounts (
   password_hash text not null,
   score integer not null default 0,
   signal_points integer not null default 0,
+  relic_inventory jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 -- score는 랭크 점수(RP)로 사용합니다. 기존 점수는 그대로 RP로 전환됩니다.
 alter table public.player_accounts add column if not exists signal_points integer not null default 0;
+alter table public.player_accounts add column if not exists relic_inventory jsonb not null default '{}'::jsonb;
 
 -- 기존 음수 RP·재화를 복구하고 앞으로도 0 아래로 내려가지 않게 합니다.
 update public.player_accounts
@@ -91,6 +93,61 @@ begin
 end;
 $$;
 
+drop function if exists public.apply_relic_draw(uuid, integer, jsonb);
+create or replace function public.apply_relic_draw(
+  p_account_id uuid,
+  p_cost integer,
+  p_results jsonb
+)
+returns table(new_points integer, new_inventory jsonb)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_points integer;
+  inventory jsonb;
+  relic_id text;
+  amount_text text;
+  amount integer;
+begin
+  if p_cost not in (160, 1600) then
+    raise exception 'invalid relic draw cost';
+  end if;
+
+  select signal_points, coalesce(relic_inventory, '{}'::jsonb)
+    into current_points, inventory
+    from public.player_accounts
+    where id = p_account_id
+    for update;
+
+  if not found or current_points < p_cost then
+    return;
+  end if;
+
+  for relic_id, amount_text in select key, value from jsonb_each_text(coalesce(p_results, '{}'::jsonb))
+  loop
+    amount := greatest(0, amount_text::integer);
+    if amount > 0 then
+      inventory := jsonb_set(
+        inventory,
+        array[relic_id],
+        to_jsonb(coalesce((inventory ->> relic_id)::integer, 0) + amount),
+        true
+      );
+    end if;
+  end loop;
+
+  update public.player_accounts
+    set signal_points = signal_points - p_cost,
+        relic_inventory = inventory,
+        updated_at = now()
+    where id = p_account_id
+    returning signal_points, relic_inventory into new_points, new_inventory;
+  return next;
+end;
+$$;
+
 alter table public.game_rooms enable row level security;
 alter table public.player_accounts enable row level security;
 alter table public.account_sessions enable row level security;
@@ -100,6 +157,8 @@ revoke all on table public.game_rooms, public.player_accounts, public.account_se
 grant select, insert, update, delete on table public.game_rooms, public.player_accounts, public.account_sessions, public.ranked_match_results to service_role;
 revoke all on function public.apply_ranked_result(text, uuid, integer, integer, integer) from public, anon, authenticated;
 grant execute on function public.apply_ranked_result(text, uuid, integer, integer, integer) to service_role;
+revoke all on function public.apply_relic_draw(uuid, integer, jsonb) from public, anon, authenticated;
+grant execute on function public.apply_relic_draw(uuid, integer, jsonb) to service_role;
 
 create index if not exists game_rooms_updated_at_idx on public.game_rooms (updated_at);
 create index if not exists account_sessions_account_idx on public.account_sessions (account_id);
