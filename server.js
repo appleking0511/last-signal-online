@@ -175,6 +175,7 @@ async function loadPersistedRoom(code){
   if(Number(room.rulesVersion||0)<13)room.rulesVersion=13;for(const p of room.players)p.rankRp=safeScore(p.rankRp);
   if(Number(room.rulesVersion||0)<14)room.rulesVersion=14;for(const p of room.players){p.relic=normalizeRelic(p.relic);p.relicState={lastStandUsed:!!p.relicState?.lastStandUsed,revived:!!p.relicState?.revived}}
   if(Number(room.rulesVersion||0)<15)room.rulesVersion=15;
+  if(Number(room.rulesVersion||0)<16)room.rulesVersion=16;
   refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);if(room.status==='finished'&&room.matchType==='random'&&room.ratingState!=='complete')beginRankedSettlement(room);return room;
 }
 async function getRoom(code){
@@ -299,7 +300,7 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name,account=null,matchType='custom',profile={},relicId=null){
   const code=roomCode(),host=makePlayer(name,0,false,account?.id||null,profile,account?.score,relicId);
-  const room={code,hostId:host.id,matchType,ranked:matchType==='random',ratingState:null,ratingResults:[],createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:15,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,direction:1,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},eliminationOrder:[],ranking:[],deadline:null,timer:null,nextEnergy:false,winner:null,winners:[],endReason:null,settings:normalizeSettings(),roundState:null};
+  const room={code,hostId:host.id,matchType,ranked:matchType==='random',ratingState:null,ratingResults:[],createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:16,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,direction:1,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},eliminationOrder:[],ranking:[],deadline:null,timer:null,nextEnergy:false,winner:null,winners:[],endReason:null,settings:normalizeSettings(),roundState:null};
   rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
 async function joinRoom(code,name,account=null,profile={},relicId=null){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby'||room.matchType==='random')throw Error('참가할 수 없는 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length,false,account?.id||null,profile,account?.score,relicId);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
@@ -446,7 +447,7 @@ function relicAttackBonus(room,p){if(p.relic?.id!=='hotHand')return 0;activateRe
 function relicDefenseBonus(room,p,card){if(p.relic?.id!=='hotDefense'||!card?.block)return 0;activateRelic(room,p,'이번 방어량 +1');return 1}
 function damageValue(room,p,c){let n=c.damage||0;if(p.buffs.weapon){n+=2;p.buffs.weapon--}if(p.buffs.itemAttack){n+=p.buffs.itemAttack;p.buffs.itemAttack=0}n+=relicAttackBonus(room,p);return n}
 function defenseSucceeds(room,p,card){if(!card?.defenseChance)return true;const chance=p?.relic?.id==='painAverse'?90:card.defenseChance;if(p?.relic?.id==='painAverse')activateRelic(room,p,`방어 성공 확률 ${chance}% 적용`);return crypto.randomInt(100)<chance}
-function relicBlocksIncoming(room,p,incoming){if(!incoming)return false;if(p.relic?.id==='blessing'&&!incoming.doom&&incoming.damage>0&&incoming.damage<=2){activateRelic(room,p,`${incoming.damage} 피해 공격을 완전히 방어`);return true}if(p.relic?.id==='tank'&&crypto.randomInt(100)<20){activateRelic(room,p,'20% 판정 성공 · 공격을 완전히 방어');return true}return false}
+function relicBlocksIncoming(room,p,incoming){if(!incoming||incoming.relicChecked)return false;incoming.relicChecked=true;if(p.relic?.id==='blessing'&&!incoming.doom&&incoming.damage>0&&incoming.damage<=2){activateRelic(room,p,`${incoming.damage} 피해 공격을 완전히 방어`);return true}if(p.relic?.id==='tank'&&crypto.randomInt(100)<20){activateRelic(room,p,'20% 판정 성공 · 공격을 완전히 방어');return true}return false}
 function utility(room,p,c){
   let blockadeTarget=null;
   if(c.id==='blockade'){blockadeTarget=nextAlive(room,p);blockadeTarget.buffs.skipTurns=(blockadeTarget.buffs.skipTurns||0)+1;addEffect(room,'blockade',p,blockadeTarget,c,'다음 차례 봉쇄');addLog(room,`${p.name} 봉쇄 → ${blockadeTarget.name}의 다음 차례 건너뜀`,'good')}
@@ -467,7 +468,7 @@ function applyDoom(room,target,source,card){
   addEffect(room,'doom',source,target,card,'멸망의 노래 · 3턴');addLog(room,`${target.name} 멸망의 노래 저주 · 3턴 동안 공격을 받으면 즉시 탈락`,'death');
 }
 function queueAttack(room,attacker,target,packet,card){
-  if(!target?.alive)return;room.pendingAttacks[target.id]={attackerId:attacker.id,damage:packet.damage,name:packet.name,pierce:!!packet.pierce,allin:!!packet.allin,doom:!!packet.doom,card:publicCard(card)};
+  if(!target?.alive)return;room.pendingAttacks[target.id]={attackerId:attacker.id,damage:packet.damage,name:packet.name,pierce:!!packet.pierce,allin:!!packet.allin,doom:!!packet.doom,relicChecked:false,card:publicCard(card)};
 }
 function incomingAttacker(room,incoming){return incoming.attackerId==='presented'?PRESENTED_ATTACKER:room.players.find(p=>p.id===incoming.attackerId)}
 function resolveSubmittedTurn(room,p){
