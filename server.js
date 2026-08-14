@@ -174,6 +174,7 @@ async function loadPersistedRoom(code){
   if(Number(room.rulesVersion||0)<12)room.rulesVersion=12;for(const p of room.players)p.profile=normalizeProfile(p.profile);
   if(Number(room.rulesVersion||0)<13)room.rulesVersion=13;for(const p of room.players)p.rankRp=safeScore(p.rankRp);
   if(Number(room.rulesVersion||0)<14)room.rulesVersion=14;for(const p of room.players){p.relic=normalizeRelic(p.relic);p.relicState={lastStandUsed:!!p.relicState?.lastStandUsed,revived:!!p.relicState?.revived}}
+  if(Number(room.rulesVersion||0)<15)room.rulesVersion=15;
   refreshCardUid(room);rooms.set(code,room);resumeRoomTimer(room);if(room.status==='finished'&&room.matchType==='random'&&room.ratingState!=='complete')beginRankedSettlement(room);return room;
 }
 async function getRoom(code){
@@ -298,7 +299,7 @@ function publicCard(c){return c?{id:c.id,uid:c.uid,name:c.name,type:c.type,rarit
 
 function createRoom(name,account=null,matchType='custom',profile={},relicId=null){
   const code=roomCode(),host=makePlayer(name,0,false,account?.id||null,profile,account?.score,relicId);
-  const room={code,hostId:host.id,matchType,ranked:matchType==='random',ratingState:null,ratingResults:[],createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:14,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,direction:1,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},eliminationOrder:[],ranking:[],deadline:null,timer:null,nextEnergy:false,winner:null,winners:[],endReason:null,settings:normalizeSettings(),roundState:null};
+  const room={code,hostId:host.id,matchType,ranked:matchType==='random',ratingState:null,ratingResults:[],createdAt:Date.now(),updatedAt:Date.now(),rulesVersion:15,status:'lobby',phase:'lobby',players:[host],clients:new Map(),logs:[],effects:[],fxSeq:0,round:0,turnNumber:0,startIndex:0,direction:1,event:null,eventDeck:shuffle([...EVENTS]),presentedDeck:[],nextPresented:null,revealIndex:0,revealCurrentId:null,currentPlayerId:null,turnOrder:[],turnCursor:0,pendingAttacks:{},eliminationOrder:[],ranking:[],deadline:null,timer:null,nextEnergy:false,winner:null,winners:[],endReason:null,settings:normalizeSettings(),roundState:null};
   rooms.set(code,room);persistRoom(room);return {room,player:host};
 }
 async function joinRoom(code,name,account=null,profile={},relicId=null){const room=await getRoom(code);if(!room)throw Error('존재하지 않는 방입니다.');if(room.status!=='lobby'||room.matchType==='random')throw Error('참가할 수 없는 방입니다.');if(room.players.length>=8)throw Error('방이 가득 찼습니다.');const p=makePlayer(name,room.players.length,false,account?.id||null,profile,account?.score,relicId);room.players.push(p);addLog(room,`${p.name} 입장`,'system');broadcast(room);return {room,player:p}}
@@ -419,7 +420,7 @@ function runBotTurn(room,p){
 function submit(room,p,kind,uid,targetId){
   if(room.phase!=='turn')throw Error('지금은 카드를 선택할 수 없습니다.');if(room.currentPlayerId!==p.id)throw Error('아직 당신의 차례가 아닙니다.');if(!p.alive)throw Error('탈락한 플레이어입니다.');if(p.choice)throw Error('이미 선택을 확정했습니다.');
   if(kind==='draw'){if(p.hand.length>=12)throw Error('손패가 가득 찼습니다.');p.choice={kind:'draw'};}
-  else {const c=p.hand.find(x=>x.uid===Number(uid));if(!c)throw Error('손패에 없는 카드입니다.');const incoming=room.pendingAttacks[p.id];if(incoming&&p.buffs.weakness&&c.type==='defense')throw Error('약점이 간파되어 이번 공격에는 방어 카드를 사용할 수 없습니다.');if(incoming&&c.chooseTarget)throw Error('공격을 받고 있을 때는 유도탄을 사용할 수 없습니다. 방어하거나 반격하세요.');if(c.lastDefense&&(!incoming||p.hp>5))throw Error('최후의 방어는 HP가 5 이하이고 공격을 받고 있을 때만 사용할 수 있습니다.');let chosenTarget=null;if(c.chooseTarget){chosenTarget=room.players.find(x=>x.id===targetId&&x.alive&&x!==p);if(!chosenTarget)throw Error('유도탄을 발사할 상대를 선택하세요.');if(room.pendingAttacks[chosenTarget.id])throw Error('이미 공격을 기다리는 플레이어에게는 유도탄을 발사할 수 없습니다.')}p.choice={kind:'card',card:c,targetId:chosenTarget?.id||null}}
+  else {const c=p.hand.find(x=>x.uid===Number(uid));if(!c)throw Error('손패에 없는 카드입니다.');const incoming=room.pendingAttacks[p.id];if(incoming&&p.buffs.weakness&&c.type==='defense')throw Error('약점이 간파되어 이번 공격에는 방어 카드를 사용할 수 없습니다.');if(c.lastDefense&&(!incoming||p.hp>5))throw Error('최후의 방어는 HP가 5 이하이고 공격을 받고 있을 때만 사용할 수 있습니다.');let chosenTarget=null;if(c.chooseTarget){chosenTarget=room.players.find(x=>x.id===targetId&&x.alive&&x!==p);if(!chosenTarget)throw Error('유도탄을 발사할 상대를 선택하세요.');if(room.pendingAttacks[chosenTarget.id])throw Error('이미 공격을 기다리는 플레이어에게는 유도탄을 발사할 수 없습니다.')}p.choice={kind:'card',card:c,targetId:chosenTarget?.id||null}}
   addLog(room,`${p.name} 카드 제출`,'quiet');resolveSubmittedTurn(room,p);
 }
 function useItem(room,p,uid,targetId){
@@ -446,20 +447,6 @@ function relicDefenseBonus(room,p,card){if(p.relic?.id!=='hotDefense'||!card?.bl
 function damageValue(room,p,c){let n=c.damage||0;if(p.buffs.weapon){n+=2;p.buffs.weapon--}if(p.buffs.itemAttack){n+=p.buffs.itemAttack;p.buffs.itemAttack=0}n+=relicAttackBonus(room,p);return n}
 function defenseSucceeds(room,p,card){if(!card?.defenseChance)return true;const chance=p?.relic?.id==='painAverse'?90:card.defenseChance;if(p?.relic?.id==='painAverse')activateRelic(room,p,`방어 성공 확률 ${chance}% 적용`);return crypto.randomInt(100)<chance}
 function relicBlocksIncoming(room,p,incoming){if(!incoming)return false;if(p.relic?.id==='blessing'&&!incoming.doom&&incoming.damage>0&&incoming.damage<=2){activateRelic(room,p,`${incoming.damage} 피해 공격을 완전히 방어`);return true}if(p.relic?.id==='tank'&&crypto.randomInt(100)<20){activateRelic(room,p,'20% 판정 성공 · 공격을 완전히 방어');return true}return false}
-function attack(room,attacker,target,packet,depth=0){
-  if((!attacker||!attacker.alive)||!target.alive)return;const tc=target.choice?.kind==='card'?target.choice.card:null;
-  if(tc&&!target.choiceUsed&&tc.type==='attack'&&!tc.counter){addEffect(room,'clash',target,target,tc,'공격 충돌 · 자신의 공격 무효');hurt(room,target,packet.damage,packet.name);consume(target,tc);addLog(room,`${target.name}의 공격 카드 충돌로 무효`);return}
-  if(tc&&!target.choiceUsed&&tc.counter&&!packet.noCounter){addEffect(room,'counter',target,nextAlive(room,target),tc,'반격');consume(target,tc);if(depth>=2){hurt(room,target,packet.damage,'반격 한도 초과');return}const next=nextAlive(room,target);addLog(room,`${target.name} 반격 · ${packet.damage+3} 피해 전달`,'good');attack(room,target,next,{damage:packet.damage+3,name:'반격'},depth+1);return}
-  if(tc&&!target.choiceUsed&&tc.type==='defense'){
-    const success=defenseSucceeds(room,target,tc);addEffect(room,success?(tc.reflect?'reflect':'defense'):'defense_fail',target,success?attacker:target,tc,success?`${tc.name} · 방어 성공`:`${tc.name} · 방어 실패`);consume(target,tc);
-    if(!success){addLog(room,`${target.name} ${tc.name} · 방어 실패`,'hit');hurt(room,target,packet.damage,packet.name);return}
-    if(tc.rainbow||tc.full){addLog(room,`${target.name} ${tc.name} · 공격 무효`,'good');if(packet.allin&&!attacker.system)hurt(room,attacker,10,'이판사판 반동');return}
-    if(tc.reflect&&!packet.noReflect){addLog(room,`${target.name} 가시 방어 · ${packet.damage} 반사`,'good');if(attacker.system)addLog(room,'제시 공격이 반사되어 소멸','good');else hurt(room,attacker,packet.damage,'가시 반사');return}
-    if(packet.pierce){hurt(room,target,packet.damage,packet.name+' 관통');return}
-    let block=(tc.block||0)+relicDefenseBonus(room,target,tc);if(target.buffs.shield&&tc.block){block+=2;target.buffs.shield--}const left=Math.max(0,packet.damage-block);addLog(room,`${target.name} ${block} 방어 · ${left} 피해 통과`,'good');if(left)hurt(room,target,left,packet.name);else if(packet.allin&&!attacker.system)hurt(room,attacker,10,'이판사판 반동');return;
-  }
-  hurt(room,target,packet.damage,packet.name);
-}
 function utility(room,p,c){
   let blockadeTarget=null;
   if(c.id==='blockade'){blockadeTarget=nextAlive(room,p);blockadeTarget.buffs.skipTurns=(blockadeTarget.buffs.skipTurns||0)+1;addEffect(room,'blockade',p,blockadeTarget,c,'다음 차례 봉쇄');addLog(room,`${p.name} 봉쇄 → ${blockadeTarget.name}의 다음 차례 건너뜀`,'good')}
@@ -498,14 +485,14 @@ function resolveIncomingTurn(room,p,choice,incoming,attacker){
   if(incoming.doom){
     if(card?.counter){const next=nextAlive(room,p),damage=3+relicAttackBonus(room,p);addEffect(room,'counter',p,next,card,'멸망의 노래 반격');consume(p,card);queueAttack(room,p,next,{damage,name:'반격',pierce:false},card);addLog(room,`${p.name} 반격 · 멸망의 노래를 막고 ${damage} 피해가 ${next.name}에게 전달`,'good');return}
     if(card?.type==='defense'){const success=defenseSucceeds(room,p,card);addEffect(room,success?'defense':'defense_fail',p,success?attacker:p,card,success?'멸망의 노래 봉쇄':`${card.name} · 방어 실패`);consume(p,card);if(success){addLog(room,`${p.name} ${card.name} · 멸망의 노래 저주 무효`,'good');return}addLog(room,`${p.name} ${card.name} · 방어 실패`,'hit')}
-    if(card?.type==='attack'){addEffect(room,'clash',p,p,card,'공격 충돌 · 자신의 공격 무효');consume(p,card);addLog(room,`${p.name}의 ${card.name} 무효`)}
     applyDoom(room,p,attacker,incoming.card);
     if(choice.kind==='draw'){p.choiceUsed=true;draw(room,p);addEffect(room,'draw',p,null,null,'카드 뽑기');addLog(room,`${p.name} 카드 1장 획득`)}
+    else if(card?.type==='attack'){addLog(room,`${p.name} 멸망의 노래를 감수하고 ${card.name} 사용`,'hit');resolveFreeTurn(room,p,choice)}
     else if(card?.type==='production'){consume(p,card);utility(room,p,card)}
     return
   }
   if(choice.kind==='draw'){addEffect(room,'damage',attacker,p,incoming.card,incoming.name);hurt(room,p,incoming.damage,incoming.name);p.choiceUsed=true;if(p.alive){draw(room,p);addEffect(room,'draw',p,null,null,'카드 뽑기');addLog(room,`${p.name} 카드 1장 획득`)}return}
-  if(card.type==='attack'&&!card.counter){addEffect(room,'clash',p,p,card,'공격 충돌 · 자신의 공격 무효');hurt(room,p,incoming.damage,incoming.name);consume(p,card);addLog(room,`${p.name}의 ${card.name} 무효`);return}
+  if(card.type==='attack'&&!card.counter){addEffect(room,'damage',attacker,p,incoming.card,incoming.name);hurt(room,p,incoming.damage,incoming.name);if(p.alive){addLog(room,`${p.name} ${incoming.name} 피해를 감수하고 ${card.name} 사용`,'hit');resolveFreeTurn(room,p,choice)}else{consume(p,card);addLog(room,`${p.name} 탈락 · ${card.name} 발동 취소`,'death')}return}
   if(card.counter){const next=nextAlive(room,p),damage=incoming.damage+3+relicAttackBonus(room,p);addEffect(room,'counter',p,next,card,'반격');consume(p,card);queueAttack(room,p,next,{damage,name:'반격',pierce:false},card);addLog(room,`${p.name} 반격 · ${damage} 피해가 ${next.name}에게 전달`,'good');return}
   if(card.type==='defense'){
     const success=defenseSucceeds(room,p,card);addEffect(room,success?(card.reflect?'reflect':'defense'):'defense_fail',p,success?attacker:p,card,success?`${card.name} · 방어 성공`:`${card.name} · 방어 실패`);consume(p,card);
