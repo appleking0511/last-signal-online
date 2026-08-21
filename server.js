@@ -574,7 +574,7 @@ async function api(req,res,url){
 function staticFile(req,res,url){
   let requested=url.pathname==='/'?'/online.html':url.pathname;const safe=path.normalize(requested).replace(/^(\.\.[/\\])+/, '');const file=path.join(ROOT,safe);
   if(!file.startsWith(ROOT)||!fs.existsSync(file)||fs.statSync(file).isDirectory())return json(res,404,{error:'파일을 찾을 수 없습니다.'});
-  const ext=path.extname(file);const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.svg':'image/svg+xml'};res.writeHead(200,{'content-type':types[ext]||'application/octet-stream','cache-control':ext==='.html'?'no-store':'public, max-age=3600'});fs.createReadStream(file).pipe(res);
+  const ext=path.extname(file);const types={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.webp':'image/webp','.svg':'image/svg+xml'};res.writeHead(200,{'content-type':types[ext]||'application/octet-stream','cache-control':ext==='.html'?'no-store':'public, max-age=3600'});fs.createReadStream(file).pipe(res);
 }
 const server=http.createServer((req,res)=>{if(req.method==='OPTIONS'){res.writeHead(204,CORS_HEADERS);res.end();return}const url=new URL(req.url,'http://localhost');if(url.pathname.startsWith('/api/'))api(req,res,url);else staticFile(req,res,url)});
 server.listen(PORT,'0.0.0.0',()=>{console.log(`LAST SIGNAL online server: http://localhost:${PORT}`);repairNegativeScores().catch(error=>console.error('[score repair]',error.message));cleanupExpiredData().catch(error=>console.error('[data cleanup]',error.message))});
