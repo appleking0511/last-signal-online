@@ -1,0 +1,17 @@
+LAST SIGNAL GitHub 업로드 방법
+================================
+
+1. prepare-github-upload.ps1을 실행합니다.
+2. 생성된 github-upload 폴더를 엽니다.
+3. github-upload 폴더 안의 모든 파일과 assets 폴더를 선택합니다.
+4. GitHub 저장소에서 Add file → Upload files를 누릅니다.
+5. 선택한 내용을 업로드 영역에 끌어 놓습니다.
+6. Commit changes를 누릅니다.
+
+주의
+----
+- 프로젝트의 원본 assets 폴더 전체를 올릴 필요가 없습니다.
+- last-signal-github-upload.zip은 보관·전달용입니다. GitHub 저장소에는
+  ZIP 파일 자체가 아니라 github-upload 폴더 안의 내용을 올려야 합니다.
+- 새 업데이트를 준비할 때 prepare-github-upload.ps1을 다시 실행하면
+  현재 online.html에서 실제로 사용하는 자산만 새로 정리됩니다.
